@@ -1,7 +1,13 @@
 import os
 import httpx
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+
+from database import Base, engine, SessionLocal
+from business import DEFAULT_BUSINESS_ID
+import models
+from routers import products, orders, payments
 
 load_dotenv()
 
@@ -10,7 +16,25 @@ WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 GRAPH_URL = f"https://graph.facebook.com/v21.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
 
+Base.metadata.create_all(bind=engine)
+
+with SessionLocal() as db:
+    if not db.query(models.Business).filter(models.Business.id == DEFAULT_BUSINESS_ID).first():
+        db.add(models.Business(id=DEFAULT_BUSINESS_ID, name="My Business"))
+        db.commit()
+
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(products.router)
+app.include_router(orders.router)
+app.include_router(payments.router)
 
 
 @app.get("/webhook")
