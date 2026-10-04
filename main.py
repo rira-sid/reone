@@ -30,6 +30,9 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
+    # Covers the production domain plus every Vercel preview deployment URL,
+    # so a new preview build isn't blocked until someone remembers to add it here.
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_methods=["*"],
     allow_headers=["*"],
 )
