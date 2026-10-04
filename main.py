@@ -1,6 +1,8 @@
 import os
+from collections import deque
+
 import httpx
-from fastapi import FastAPI, Request, Response
+from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -48,8 +50,26 @@ def verify_webhook(request: Request):
     return Response(status_code=403)
 
 
+# Meta retries webhook delivery (several times, same message id) if it doesn't get a fast
+# 200 back - e.g. while a free-tier instance is waking up from sleep. Track recently-seen
+# message ids so a retried delivery doesn't trigger a duplicate reply. Bounded deque so this
+# can't grow unbounded; fine for a single instance - revisit if we ever scale out.
+_SEEN_MESSAGE_IDS: deque[str] = deque(maxlen=1000)
+_seen_message_id_set: set[str] = set()
+
+
+def _already_processed(message_id: str) -> bool:
+    if message_id in _seen_message_id_set:
+        return True
+    if len(_SEEN_MESSAGE_IDS) == _SEEN_MESSAGE_IDS.maxlen:
+        _seen_message_id_set.discard(_SEEN_MESSAGE_IDS[0])
+    _SEEN_MESSAGE_IDS.append(message_id)
+    _seen_message_id_set.add(message_id)
+    return False
+
+
 @app.post("/webhook")
-async def receive_message(request: Request):
+async def receive_message(request: Request, background_tasks: BackgroundTasks):
     body = await request.json()
     print("INCOMING:", body)
 
@@ -58,10 +78,17 @@ async def receive_message(request: Request):
         messages = entry.get("messages")
         if messages:
             msg = messages[0]
-            from_number = msg["from"]
-            text = msg.get("text", {}).get("body", "")
-            print(f"Message from {from_number}: {text}")
-            await send_message(from_number, f"Got your message: {text}")
+            message_id = msg.get("id")
+            if message_id and _already_processed(message_id):
+                print(f"Duplicate delivery for {message_id}, skipping")
+            else:
+                from_number = msg["from"]
+                text = msg.get("text", {}).get("body", "")
+                print(f"Message from {from_number}: {text}")
+                # Reply in the background so we can return 200 to Meta immediately -
+                # otherwise a slow cold-start response makes Meta assume delivery failed
+                # and resend the same message, which is what caused the duplicate-reply bug.
+                background_tasks.add_task(send_message, from_number, f"Got your message: {text}")
     except (KeyError, IndexError):
         pass
 
