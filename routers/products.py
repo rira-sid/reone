@@ -11,7 +11,9 @@ router = APIRouter(prefix="/products", tags=["products"])
 
 @router.get("", response_model=list[schemas.ProductOut])
 def list_products(db: Session = Depends(get_db), business: models.Business = Depends(current_business)):
-    return db.query(models.Product).filter(models.Product.business_id == business.id).all()
+    return db.query(models.Product).filter(
+        models.Product.business_id == business.id, models.Product.is_active.is_(True)
+    ).all()
 
 
 @router.post("", response_model=schemas.ProductOut)
@@ -44,6 +46,9 @@ def delete_product(product_id: int, db: Session = Depends(get_db), business: mod
     ).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    db.delete(product)
+    if db.query(models.OrderItem).filter(models.OrderItem.product_id == product.id).first():
+        product.is_active = False  # keep it for past orders/invoices, hide it everywhere else
+    else:
+        db.delete(product)
     db.commit()
     return {"status": "deleted"}

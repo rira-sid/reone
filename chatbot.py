@@ -45,7 +45,7 @@ def _stock_problems(db, business_id: int, cart: list[ai.CartItem]) -> list[str]:
         product = db.query(models.Product).filter(
             models.Product.id == item.product_id, models.Product.business_id == business_id
         ).first()
-        if not product:
+        if not product or not product.is_active:
             problems.append(f"product {item.product_id} no longer exists")
         elif product.stock < item.quantity:
             problems.append(f"only {product.stock} {product.unit} of {product.name} left")
@@ -73,14 +73,22 @@ def _checkout(db, business: models.Business, conversation: models.Conversation, 
 
 
 async def handle_incoming(
-    business_id: int, phone: str, text: str, profile_name: str | None = None, image_media_id: str | None = None
+    business_id: int,
+    phone: str,
+    text: str,
+    profile_name: str | None = None,
+    image_media_id: str | None = None,
+    wa_message_id: str | None = None,
 ):
     with SessionLocal() as db:
+        if wa_message_id and db.query(models.Message).filter(models.Message.wa_message_id == wa_message_id).first():
+            print(f"Already handled {wa_message_id}, skipping")
+            return
         business = db.get(models.Business, business_id)
         creds = whatsapp_creds(business)
         conversation = _get_or_create_conversation(db, business_id, phone, profile_name)
         conversation.last_customer_message_at = datetime.now(timezone.utc)
-        db.add(models.Message(conversation_id=conversation.id, sender="customer", text=text))
+        db.add(models.Message(conversation_id=conversation.id, sender="customer", text=text, wa_message_id=wa_message_id))
         db.commit()
         db.refresh(conversation)
 
@@ -94,9 +102,19 @@ async def handle_incoming(
             except WhatsAppSendError as e:
                 print("IMAGE DOWNLOAD FAILED:", e)
 
-        products = db.query(models.Product).filter(models.Product.business_id == business_id).all()
+        products = db.query(models.Product).filter(
+            models.Product.business_id == business_id, models.Product.is_active.is_(True)
+        ).all()
+        recent_orders = (
+            db.query(models.Order)
+            .join(models.Customer)
+            .filter(models.Order.business_id == business_id, models.Customer.phone == phone)
+            .order_by(models.Order.id.desc())
+            .limit(5)
+            .all()
+        )
         try:
-            turn = await ai.run_turn(business.name, conversation, products, image)
+            turn = await ai.run_turn(business.name, conversation, products, image, recent_orders)
         except Exception as e:
             # Refusal, API outage, missing key, bad output... never leave the customer unanswered.
             print("AI ERROR:", repr(e))

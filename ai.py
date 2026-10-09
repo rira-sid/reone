@@ -37,6 +37,7 @@ total and payment link itself - do not invent a payment link.
 or missing delivery, custom requests, bulk/wholesale pricing, or anything you can't answer from the \
 catalog. In that case, tell them the seller will reply shortly.
 - Customers may send a photo (e.g. a product picture or a handwritten list). If one is attached, read it and treat what it shows as part of their message. Voice notes can't be listened to yet - if the customer sent one, politely ask them to type their order instead.
+- If the customer asks about an earlier order (status, delivery, tracking, payment), answer from <customer_orders>. If an order is unpaid and has a payment link, you may share that link again. If you can't find the order they mean, or they report a problem with it, set needs_human to true.
 - Keep replies short and friendly, like a helpful shop assistant on WhatsApp. No markdown headings.
 - Never make up prices, discounts, delivery dates or policies."""
 
@@ -69,9 +70,22 @@ def _catalog_text(products: list[models.Product]) -> str:
 
 
 def _transcript(conversation: models.Conversation) -> str:
-    labels = {"customer": "Customer", "ai": "You", "seller": "Seller (human)"}
+    labels = {"customer": "Customer", "ai": "You", "seller": "Seller (human)", "system": "Automatic update"}
     recent = conversation.messages[-HISTORY_LIMIT:]
     return "\n".join(f"{labels.get(m.sender, m.sender)}: {m.text}" for m in recent)
+
+
+def _orders_text(orders: list[models.Order]) -> str:
+    if not orders:
+        return "(No earlier orders.)"
+    lines = []
+    for o in orders:
+        items = ", ".join(f"{i.quantity} x {i.product.name}" for i in o.items)
+        payment = "paid" if o.is_paid else (f"unpaid - payment link {o.payment_link_url}" if o.payment_link_url else "unpaid")
+        tracking = f", tracking: {o.tracking_info}" if o.tracking_info else ""
+        placed = o.created_at.strftime("%d %b %Y") if o.created_at else "?"
+        lines.append(f"- Order #{o.id} placed {placed}: {items}; total ₹{o.total_amount:g}; {payment}; status {o.status}{tracking}")
+    return "\n".join(lines)
 
 
 # Image types the Claude API accepts.
@@ -83,6 +97,7 @@ async def run_turn(
     conversation: models.Conversation,
     products: list[models.Product],
     image: tuple[bytes, str] | None = None,
+    recent_orders: list[models.Order] | None = None,
 ) -> AssistantTurn:
     """`image` is an optional (bytes, mime_type) photo attached to the customer's latest message."""
     state = {
@@ -94,6 +109,7 @@ async def run_turn(
         f"<shop>{shop_name}</shop>\n\n"
         f"<catalog>\n{_catalog_text(products)}\n</catalog>\n\n"
         f"<collected_so_far>\n{json.dumps(state, ensure_ascii=False)}\n</collected_so_far>\n\n"
+        f"<customer_orders>\n{_orders_text(recent_orders or [])}\n</customer_orders>\n\n"
         f"<conversation>\n{_transcript(conversation)}\n</conversation>\n\n"
         "Respond to the customer's latest message."
     )

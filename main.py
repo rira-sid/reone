@@ -135,6 +135,8 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
                 # Reply in the background so we can return 200 to Meta immediately -
                 # otherwise a slow cold-start response makes Meta assume delivery failed
                 # and resend the same message, which is what caused the duplicate-reply bug.
-                background_tasks.add_task(handle_incoming, business.id, from_number, text, profile_name, image_media_id)
+                background_tasks.add_task(
+                    handle_incoming, business.id, from_number, text, profile_name, image_media_id, message_id
+                )
 
     return {"status": "ok"}

@@ -29,3 +29,6 @@ def add_missing_columns(engine):
                         default = " DEFAULT '" + value.replace("'", "''") + "'"
                 print(f"MIGRATE: adding {table.name}.{column.name}")
                 conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN "{column.name}" {col_type}{default}'))
+            # Indexes on columns added above (create_all only indexes brand-new tables).
+            for index in table.indexes:
+                index.create(conn, checkfirst=True)

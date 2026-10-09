@@ -16,7 +16,7 @@ ORDER_UPDATE_TEMPLATE_LANG = os.getenv("WA_TEMPLATE_ORDER_UPDATE_LANG", "en")
 SERVICE_WINDOW = timedelta(hours=23, minutes=30)
 
 
-def _within_service_window(conversation: models.Conversation | None) -> bool:
+def within_service_window(conversation: models.Conversation | None) -> bool:
     if not conversation or not conversation.last_customer_message_at:
         return False
     last = conversation.last_customer_message_at
@@ -36,7 +36,7 @@ async def notify_order_update(db, business: models.Business, order: models.Order
     text = f"Order #{order.id} update: {update}"
 
     try:
-        if _within_service_window(conversation):
+        if within_service_window(conversation):
             await send_message(creds, customer.phone, text)
         else:
             await send_template(

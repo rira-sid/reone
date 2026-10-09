@@ -60,7 +60,7 @@ def place_order(db: Session, business_id: int, customer: models.Customer, items:
         product = db.query(models.Product).filter(
             models.Product.id == item.product_id, models.Product.business_id == business_id
         ).first()
-        if not product:
+        if not product or not product.is_active:
             raise HTTPException(status_code=404, detail=f"Product {item.product_id} not found")
         line_total = product.price * item.quantity
         total += line_total

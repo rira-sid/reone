@@ -41,6 +41,9 @@ class Product(Base):
     price = Column(Float, nullable=False)
     stock = Column(Integer, default=0)
     unit = Column(String, default="pcs")
+    # Products that appear on past orders are hidden instead of deleted, so old orders and
+    # invoices still show what was bought.
+    is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     business = relationship("Business", back_populates="products")
@@ -120,7 +123,9 @@ class Message(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False, index=True)
-    sender = Column(String, nullable=False)  # "customer" | "ai" | "seller"
+    sender = Column(String, nullable=False)  # "customer" | "ai" | "seller" | "system"
+    # Meta's id for incoming messages - used to ignore Meta's retried deliveries, even after a restart.
+    wa_message_id = Column(String, nullable=True, index=True)
     text = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

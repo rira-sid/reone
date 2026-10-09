@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class ProductBase(BaseModel):
@@ -23,8 +23,7 @@ class ProductUpdate(BaseModel):
 class ProductOut(ProductBase):
     id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CustomerBase(BaseModel):
@@ -36,8 +35,7 @@ class CustomerBase(BaseModel):
 class CustomerOut(CustomerBase):
     id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class OrderItemCreate(BaseModel):
@@ -52,8 +50,7 @@ class OrderItemOut(BaseModel):
     quantity: int
     price_at_order: float
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class OrderCreate(BaseModel):
@@ -81,8 +78,7 @@ class OrderOut(BaseModel):
     customer: CustomerOut
     items: list[OrderItemOut]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PaymentLinkOut(BaseModel):
