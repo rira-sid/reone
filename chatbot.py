@@ -9,7 +9,7 @@ from business import DEFAULT_BUSINESS_ID
 from database import SessionLocal
 from routers.orders import place_order
 from routers.payments import ensure_payment_link
-from whatsapp import send_message
+from whatsapp import WhatsAppSendError, send_message
 
 HANDOFF_REPLY = "Thanks for your message! The seller will reply to you here shortly."
 
@@ -117,4 +117,7 @@ async def handle_incoming(phone: str, text: str, profile_name: str | None = None
 async def _reply(db, conversation: models.Conversation, text: str):
     db.add(models.Message(conversation_id=conversation.id, sender="ai", text=text))
     db.commit()
-    await send_message(conversation.phone, text)
+    try:
+        await send_message(conversation.phone, text)
+    except WhatsAppSendError as e:
+        print("AI REPLY NOT DELIVERED:", e)

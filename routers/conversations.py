@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 import models
 from business import DEFAULT_BUSINESS_ID
 from database import get_db
-from whatsapp import send_message
+from whatsapp import WhatsAppSendError, send_message
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -78,11 +78,16 @@ def set_takeover(conversation_id: int, payload: TakeoverUpdate, db: Session = De
 @router.post("/{conversation_id}/reply", response_model=MessageOut)
 async def seller_reply(conversation_id: int, payload: SellerReply, db: Session = Depends(get_db)):
     conversation = _get_conversation(db, conversation_id)
+    # Send first: only record the message once the customer has actually been sent it, so the
+    # inbox never shows a reply that didn't go out.
+    try:
+        await send_message(conversation.phone, payload.text)
+    except WhatsAppSendError as e:
+        raise HTTPException(status_code=502, detail=str(e))
     # A seller typing into the chat implies they're handling it - keep the AI out of the way.
     conversation.ai_paused = True
     message = models.Message(conversation_id=conversation.id, sender="seller", text=payload.text)
     db.add(message)
     db.commit()
     db.refresh(message)
-    await send_message(conversation.phone, payload.text)
     return message
