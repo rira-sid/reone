@@ -8,6 +8,9 @@ import models
 import schemas
 from business import whatsapp_creds
 from database import SessionLocal
+from fastapi import HTTPException
+
+from routers.invoices import PUBLIC_BASE_URL
 from routers.orders import place_order
 from routers.payments import ensure_payment_link
 from whatsapp import WhatsAppSendError, download_media, send_message
@@ -52,16 +55,39 @@ def _stock_problems(db, business_id: int, cart: list[ai.CartItem]) -> list[str]:
     return problems
 
 
-def _checkout(db, business: models.Business, conversation: models.Conversation, cart: list[ai.CartItem]) -> str:
+def shop_policies(business: models.Business) -> str:
+    lines = [f"Catalog link: {PUBLIC_BASE_URL}/shop/{business.id}"]
+    if not business.accepting_orders:
+        lines.append("NOT accepting orders right now. Shop's message: "
+                     + (business.closed_message or "We're closed at the moment and will be back soon."))
+    if business.delivery_fee:
+        rule = f"Delivery fee: ₹{business.delivery_fee:g}"
+        if business.free_delivery_above:
+            rule += f" (free delivery for orders of ₹{business.free_delivery_above:g} or more)"
+        lines.append(rule)
+    else:
+        lines.append("Delivery: free")
+    if business.min_order_amount:
+        lines.append(f"Minimum order value: ₹{business.min_order_amount:g} (before delivery fee)")
+    lines.append("Cash on delivery: " + ("available" if business.cod_enabled else "not available - online payment only"))
+    return "\n".join(lines)
+
+
+def _checkout(db, business: models.Business, conversation: models.Conversation, cart: list[ai.CartItem],
+              payment_method: str, note: str | None) -> str:
     """Create the order and return the text to append to the AI's thank-you reply."""
     customer = _get_or_create_customer(db, conversation)
     items = [schemas.OrderItemCreate(product_id=i.product_id, quantity=i.quantity) for i in cart if i.quantity > 0]
-    order = place_order(db, business.id, customer, items)
+    order = place_order(db, business, customer, items, payment_method, note)
     conversation.cart_json = "[]"
     db.commit()
     db.refresh(order)
 
     summary = f"Order #{order.id} - Total ₹{order.total_amount:g}"
+    if order.delivery_fee:
+        summary += f" (incl. ₹{order.delivery_fee:g} delivery)"
+    if order.payment_method == "cod":
+        return f"{summary}\nPlease pay ₹{order.total_amount:g} in cash on delivery."
     try:
         link = ensure_payment_link(db, business, order)
     except Exception as e:
@@ -114,7 +140,7 @@ async def handle_incoming(
             .all()
         )
         try:
-            turn = await ai.run_turn(business.name, conversation, products, image, recent_orders)
+            turn = await ai.run_turn(business.name, conversation, products, image, recent_orders, shop_policies(business))
         except Exception as e:
             # Refusal, API outage, missing key, bad output... never leave the customer unanswered.
             print("AI ERROR:", repr(e))
@@ -129,19 +155,29 @@ async def handle_incoming(
             conversation.customer_name = turn.customer_name
         if turn.delivery_address:
             conversation.delivery_address = turn.delivery_address
+        db.commit()  # keep what the AI collected even if checkout below has to roll back
 
         reply = turn.reply
         if turn.needs_human:
             conversation.ai_paused = True
         elif turn.ready_to_place_order and turn.cart and conversation.customer_name and conversation.delivery_address:
             problems = _stock_problems(db, business_id, turn.cart)
-            if problems:
+            payment_method = "cod" if turn.payment_method == "cod" and business.cod_enabled else "online"
+            if not business.accepting_orders:
+                # Safety net - the AI is told the shop is closed, but never place an order anyway.
+                reply = business.closed_message or "Sorry, we're not taking orders right now. Please check back soon!"
+            elif problems:
                 # Stock changed since Claude saw it - let the seller sort it out rather than guess.
                 conversation.ai_paused = True
                 print("STOCK PROBLEM:", problems)
                 reply = HANDOFF_REPLY
             else:
-                reply = f"{reply}\n\n{_checkout(db, business, conversation, turn.cart)}"
+                try:
+                    reply = f"{reply}\n\n{_checkout(db, business, conversation, turn.cart, payment_method, turn.order_note)}"
+                except HTTPException as e:
+                    # Broke a shop rule the AI missed (e.g. minimum order) - say so, keep the cart.
+                    db.rollback()
+                    reply = f"Sorry, we couldn't place this order: {e.detail}. Would you like to add something?"
 
         await _reply(db, creds, conversation, reply)
 

@@ -73,7 +73,7 @@ def list_conversations(db: Session = Depends(get_db), business: models.Business 
     conversations = (
         db.query(models.Conversation)
         .filter(models.Conversation.business_id == business.id)
-        .order_by(models.Conversation.updated_at.desc())
+        .order_by(models.Conversation.updated_at.desc(), models.Conversation.id.desc())
         .all()
     )
     return [_conversation_out(c) for c in conversations]

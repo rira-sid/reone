@@ -386,3 +386,120 @@ def test_staff_permissions(client):
 
     client.delete(f"/business/staff/{staff_id}", headers=owner)
     assert client.get("/orders", headers=staff).status_code == 401  # removed staff lose access at once
+
+
+# ---- shop rules: COD, delivery fee, minimum order, closed shop -----------------------------
+
+def order_via_chat(client, fake_ai, pnid, phone, product_id, qty=1, **turn):
+    fake_ai.queue = [fake_ai.turn(cart=[ai.CartItem(product_id=product_id, quantity=qty)], customer_name="Ravi",
+                                  delivery_address="12 Gandhi St", ready_to_place_order=True, reply="Thanks!", **turn)]
+    whatsapp_message(client, pnid, phone, text("confirm"))
+
+
+def latest_order(client, headers):
+    return client.get("/orders", headers=headers).json()[0]
+
+
+def test_cash_on_delivery(client, fake_ai, fake_whatsapp):
+    _, h = new_seller(client, wa_phone_number_id="PN_COD", wa_token="t", cod_enabled=True)
+    product = add_product(client, h, price=100, stock=10)
+    order_via_chat(client, fake_ai, "PN_COD", "919000000030", product["id"], qty=3, payment_method="cod",
+                   order_note="less spicy")
+    order = latest_order(client, h)
+    assert order["payment_method"] == "cod" and order["status"] == "Confirmed" and not order["is_paid"]
+    assert order["customer_note"] == "less spicy"
+    assert "cash on delivery" in fake_whatsapp.sent[-1][3] and "Pay here" not in fake_whatsapp.sent[-1][3]
+    assert client.get("/products", headers=h).json()[0]["stock"] == 7  # reserved at once for COD
+
+    r = client.patch(f"/orders/{order['id']}/payment", json={"is_paid": True}, headers=h).json()
+    assert r["is_paid"] and r["customer_notified"]
+    assert client.get("/products", headers=h).json()[0]["stock"] == 7  # not deducted twice
+
+    client.patch(f"/orders/{order['id']}/status", json={"status": "Cancelled"}, headers=h)
+    assert client.get("/products", headers=h).json()[0]["stock"] == 10  # cancelling puts stock back
+
+
+def test_cod_ignored_when_disabled(client, fake_ai):
+    _, h = new_seller(client, wa_phone_number_id="PN_NOCOD", wa_token="t")
+    product = add_product(client, h)
+    order_via_chat(client, fake_ai, "PN_NOCOD", "919000000031", product["id"], payment_method="cod")
+    assert latest_order(client, h)["payment_method"] == "online"
+
+
+def test_delivery_fee_and_free_delivery(client, fake_ai, fake_whatsapp):
+    _, h = new_seller(client, wa_phone_number_id="PN_FEE", wa_token="t", delivery_fee=40, free_delivery_above=500)
+    product = add_product(client, h, price=100, stock=50)
+    order_via_chat(client, fake_ai, "PN_FEE", "919000000032", product["id"], qty=2)
+    order = latest_order(client, h)
+    assert order["delivery_fee"] == 40 and order["total_amount"] == 240
+    assert "incl. ₹40 delivery" in fake_whatsapp.sent[-1][3]
+    order_via_chat(client, fake_ai, "PN_FEE", "919000000032", product["id"], qty=5)
+    order = latest_order(client, h)
+    assert order["delivery_fee"] == 0 and order["total_amount"] == 500
+    assert "Delivery fee: ₹40 (free delivery for orders of ₹500 or more)" in fake_ai.calls[-1]["policies"]
+
+
+def test_minimum_order_keeps_cart(client, fake_ai, fake_whatsapp):
+    _, h = new_seller(client, wa_phone_number_id="PN_MIN", wa_token="t", min_order_amount=300)
+    product = add_product(client, h, price=100)
+    order_via_chat(client, fake_ai, "PN_MIN", "919000000033", product["id"], qty=1)
+    assert client.get("/orders", headers=h).json() == []
+    assert "Minimum order is ₹300" in fake_whatsapp.sent[-1][3]
+    with SessionLocal() as db:
+        convo = db.query(models.Conversation).filter_by(phone="919000000033").first()
+        assert json.loads(convo.cart_json) and convo.customer_name == "Ravi"  # nothing lost
+
+
+def test_closed_shop_takes_no_orders(client, fake_ai, fake_whatsapp):
+    _, h = new_seller(client, wa_phone_number_id="PN_SHUT", wa_token="t", accepting_orders=False,
+                      closed_message="On holiday till Monday!")
+    product = add_product(client, h)
+    order_via_chat(client, fake_ai, "PN_SHUT", "919000000034", product["id"])
+    assert client.get("/orders", headers=h).json() == []
+    assert fake_whatsapp.sent[-1][3] == "On holiday till Monday!"
+    assert "NOT accepting orders" in fake_ai.calls[-1]["policies"]
+
+
+def test_manual_order_from_dashboard(client):
+    _, h = new_seller(client, cod_enabled=True)
+    product = add_product(client, h, price=150, stock=5)
+    r = client.post("/orders", json={"customer": {"name": "Walk-in", "phone": "919000000035", "address": ""},
+                                      "items": [{"product_id": product["id"], "quantity": 2}],
+                                      "payment_method": "cod", "customer_note": "pickup"}, headers=h)
+    assert r.status_code == 200 and r.json()["total_amount"] == 300 and r.json()["customer_note"] == "pickup"
+    assert client.post("/orders", json={"customer": {"name": "X", "phone": "1"},
+                                         "items": [{"product_id": product["id"], "quantity": 0}]},
+                       headers=h).status_code == 400
+
+
+def test_csv_export(client, fake_ai):
+    _, h = new_seller(client, wa_phone_number_id="PN_CSV", wa_token="t")
+    product = add_product(client, h, name="மசாலா", price=80)
+    order_via_chat(client, fake_ai, "PN_CSV", "919000000036", product["id"], qty=2)
+    r = client.get("/orders/export.csv", headers=h)
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
+    assert r.text.startswith("﻿Order,") and "2 x மசாலா @ 80" in r.text
+    assert client.get("/orders/export.csv").status_code == 401
+
+
+def test_public_catalog(client):
+    business_id, h = new_seller(client, name="Spice <Box>", phone="98400 12345", delivery_fee=30, cod_enabled=True)
+    client.post("/products", json={"name": "Sambar Powder", "price": 120, "stock": 4, "category": "Powders",
+                                   "description": "Stone ground"}, headers=h)
+    client.post("/products", json={"name": "Rasam Powder", "price": 90, "stock": 0, "category": "Powders"}, headers=h)
+    page = client.get(f"/shop/{business_id}")
+    assert page.status_code == 200
+    assert "Spice &lt;Box&gt;" in page.text and "Stone ground" in page.text and "Powders" in page.text
+    assert "https://wa.me/919840012345?text=" in page.text and "Out of stock" in page.text
+    assert "Delivery ₹30" in page.text and "Cash on delivery available" in page.text
+    assert client.get("/shop/999999").status_code == 404
+
+
+def test_shop_settings_round_trip(client):
+    _, h = new_seller(client)
+    out = client.patch("/business", json={"delivery_fee": 25, "free_delivery_above": 0, "min_order_amount": 200,
+                                          "cod_enabled": True, "accepting_orders": False,
+                                          "closed_message": "  Back soon  "}, headers=h).json()
+    assert out["delivery_fee"] == 25 and out["free_delivery_above"] is None and out["min_order_amount"] == 200
+    assert out["cod_enabled"] and not out["accepting_orders"] and out["closed_message"] == "Back soon"
+    assert out["catalog_path"].startswith("/shop/")

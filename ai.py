@@ -38,6 +38,14 @@ or missing delivery, custom requests, bulk/wholesale pricing, or anything you ca
 catalog. In that case, tell them the seller will reply shortly.
 - Customers may send a photo (e.g. a product picture or a handwritten list). If one is attached, read it and treat what it shows as part of their message. Voice notes can't be listened to yet - if the customer sent one, politely ask them to type their order instead.
 - If the customer asks about an earlier order (status, delivery, tracking, payment), answer from <customer_orders>. If an order is unpaid and has a payment link, you may share that link again. If you can't find the order they mean, or they report a problem with it, set needs_human to true. If they want to repeat an earlier order ("same as last time"), fill the cart from that order using products that are still in the catalog at today's prices, mention anything no longer available, and confirm the summary as usual - their saved name and address can be reused if they confirm them.
+- Follow <shop_policies>. If the shop is not accepting orders right now, don't take an order: \
+politely pass on the shop's message (in the customer's language) and still answer questions. Include the \
+delivery fee in the order summary when it applies, and don't confirm an order below the minimum order value.
+- If cash on delivery is available, ask whether they'd like to pay online or cash on delivery before \
+confirming, and set payment_method. If it isn't available, payment is online - set payment_method to "online".
+- Put any special instructions for this order (e.g. "less spicy", "deliver after 6pm") in order_note.
+- If the customer asks for the menu or price list, you can share the catalog link from <shop_policies> \
+as well as answering directly.
 - Keep replies short and friendly, like a helpful shop assistant on WhatsApp. No markdown headings.
 - Never make up prices, discounts, delivery dates or policies."""
 
@@ -56,6 +64,8 @@ class AssistantTurn(BaseModel):
     delivery_address: str | None
     ready_to_place_order: bool
     needs_human: bool
+    payment_method: Literal["online", "cod"] | None
+    order_note: str | None
 
 
 class AssistantUnavailable(Exception):
@@ -65,7 +75,11 @@ class AssistantUnavailable(Exception):
 def _catalog_text(products: list[models.Product]) -> str:
     if not products:
         return "(The catalog is empty.)"
-    lines = [f"- id {p.id}: {p.name} - ₹{p.price:g} per {p.unit} (in stock: {p.stock})" for p in products]
+    lines = []
+    for p in sorted(products, key=lambda p: ((p.category or "").lower(), p.name.lower())):
+        category = f"[{p.category}] " if p.category else ""
+        description = f" - {p.description}" if p.description else ""
+        lines.append(f"- id {p.id}: {category}{p.name} - ₹{p.price:g} per {p.unit} (in stock: {p.stock}){description}")
     return "\n".join(lines)
 
 
@@ -98,6 +112,7 @@ async def run_turn(
     products: list[models.Product],
     image: tuple[bytes, str] | None = None,
     recent_orders: list[models.Order] | None = None,
+    policies: str = "",
 ) -> AssistantTurn:
     """`image` is an optional (bytes, mime_type) photo attached to the customer's latest message."""
     state = {
@@ -107,6 +122,7 @@ async def run_turn(
     }
     prompt = (
         f"<shop>{shop_name}</shop>\n\n"
+        f"<shop_policies>\n{policies or '(none)'}\n</shop_policies>\n\n"
         f"<catalog>\n{_catalog_text(products)}\n</catalog>\n\n"
         f"<collected_so_far>\n{json.dumps(state, ensure_ascii=False)}\n</collected_so_far>\n\n"
         f"<customer_orders>\n{_orders_text(recent_orders or [])}\n</customer_orders>\n\n"

@@ -28,6 +28,14 @@ class Business(Base):
     razorpay_key_secret_enc = Column(Text, nullable=True)
     razorpay_webhook_secret_enc = Column(Text, nullable=True)
 
+    # Ordering rules
+    accepting_orders = Column(Boolean, default=True, nullable=False)
+    closed_message = Column(Text, nullable=True)
+    cod_enabled = Column(Boolean, default=False, nullable=False)
+    delivery_fee = Column(Float, default=0.0, nullable=False)
+    free_delivery_above = Column(Float, nullable=True)
+    min_order_amount = Column(Float, nullable=True)
+
     products = relationship("Product", back_populates="business")
     orders = relationship("Order", back_populates="business")
 
@@ -41,6 +49,8 @@ class Product(Base):
     price = Column(Float, nullable=False)
     stock = Column(Integer, default=0)
     unit = Column(String, default="pcs")
+    category = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
     # Products that appear on past orders are hidden instead of deleted, so old orders and
     # invoices still show what was bought.
     is_active = Column(Boolean, default=True, nullable=False)
@@ -78,6 +88,11 @@ class Order(Base):
     razorpay_payment_id = Column(String, nullable=True, unique=True)
     paid_at = Column(DateTime(timezone=True), nullable=True)
     tracking_info = Column(Text, nullable=True)
+    delivery_fee = Column(Float, default=0.0, nullable=False)
+    payment_method = Column(String, default="online", nullable=False)  # "online" | "cod"
+    customer_note = Column(Text, nullable=True)
+    # True while this order's items are taken out of product stock (paid, or a confirmed COD order).
+    stock_deducted = Column(Boolean, default=False, nullable=False)
     payment_reminder_sent_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

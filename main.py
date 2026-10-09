@@ -18,7 +18,7 @@ import auth
 from chatbot import handle_incoming
 from migrate import add_missing_columns
 from reminders import reminder_loop
-from routers import products, orders, payments, conversations, settings, invoices, insights
+from routers import products, orders, payments, conversations, settings, invoices, insights, shop
 
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 
@@ -57,6 +57,7 @@ app.include_router(conversations.router)
 app.include_router(settings.router)
 app.include_router(invoices.router)
 app.include_router(insights.router)
+app.include_router(shop.router)
 
 
 @app.get("/webhook")

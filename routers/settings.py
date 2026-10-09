@@ -20,6 +20,13 @@ class BusinessOut(BaseModel):
     gstin: str | None
     wa_phone_number_id: str | None
     razorpay_key_id: str | None
+    accepting_orders: bool
+    closed_message: str | None
+    cod_enabled: bool
+    delivery_fee: float
+    free_delivery_above: float | None
+    min_order_amount: float | None
+    catalog_path: str
     # Secrets are write-only: the dashboard only learns whether they're set.
     whatsapp_connected: bool
     razorpay_connected: bool
@@ -37,6 +44,12 @@ class BusinessUpdate(BaseModel):
     razorpay_key_id: str | None = None
     razorpay_key_secret: str | None = None
     razorpay_webhook_secret: str | None = None
+    accepting_orders: bool | None = None
+    closed_message: str | None = None
+    cod_enabled: bool | None = None
+    delivery_fee: float | None = None
+    free_delivery_above: float | None = None
+    min_order_amount: float | None = None
 
 
 class PasswordChange(BaseModel):
@@ -55,6 +68,13 @@ def _out(business: models.Business) -> dict:
         "gstin": business.gstin,
         "wa_phone_number_id": business.wa_phone_number_id,
         "razorpay_key_id": business.razorpay_key_id,
+        "accepting_orders": business.accepting_orders,
+        "closed_message": business.closed_message,
+        "cod_enabled": business.cod_enabled,
+        "delivery_fee": business.delivery_fee or 0.0,
+        "free_delivery_above": business.free_delivery_above,
+        "min_order_amount": business.min_order_amount,
+        "catalog_path": f"/shop/{business.id}",
         "whatsapp_connected": whatsapp_creds(business) is not None,
         "razorpay_connected": bool(rp.key_id and rp.key_secret),
         "razorpay_webhook_ready": bool(rp.webhook_secret),
@@ -78,6 +98,18 @@ def update_business(
             if field == "name" and not value:
                 raise HTTPException(status_code=400, detail="Business name can't be empty")
             setattr(business, field, value)
+
+    for field in ("accepting_orders", "cod_enabled"):
+        if data.get(field) is not None:
+            setattr(business, field, data[field])
+    if "closed_message" in data:
+        business.closed_message = (data["closed_message"] or "").strip() or None
+    if "delivery_fee" in data:
+        business.delivery_fee = max(0.0, data["delivery_fee"] or 0.0)
+    for field in ("free_delivery_above", "min_order_amount"):
+        if field in data:
+            value = data[field]
+            setattr(business, field, value if value and value > 0 else None)
 
     if "wa_phone_number_id" in data:
         phone_number_id = (data["wa_phone_number_id"] or "").strip() or None

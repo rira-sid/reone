@@ -62,6 +62,13 @@ def view_invoice(order_id: int, t: str = "", db: Session = Depends(get_db)):
         f"<td class='num'>{_money(i.price_at_order)}</td><td class='num'>{_money(i.price_at_order * i.quantity)}</td></tr>"
         for i in order.items
     )
+    subtotal = order.total_amount - (order.delivery_fee or 0)
+    extra_rows = ""
+    if order.delivery_fee:
+        extra_rows = (f"<tr><td colspan='3'>Subtotal</td><td class='num'>{_money(subtotal)}</td></tr>"
+                      f"<tr><td colspan='3'>Delivery</td><td class='num'>{_money(order.delivery_fee)}</td></tr>")
+    method = "Cash on delivery" if order.payment_method == "cod" else "Online"
+    note = (f"<p class='muted'><strong>Note:</strong> {escape(order.customer_note)}</p>" if order.customer_note else "")
     title = "Invoice" if order.is_paid else "Order summary"
     status = (f"<span class='paid'>PAID</span> on {_fmt_date(order.paid_at or order.created_at)}"
               if order.is_paid else "<span class='unpaid'>Payment pending</span>")
@@ -96,12 +103,14 @@ def view_invoice(order_id: int, t: str = "", db: Session = Depends(get_db)):
   <div class="meta">
     <div><div class="label">Bill to</div><div>{escape(c.name)}</div>
       <div class="muted">+{escape(c.phone)}<br>{escape(c.address or "").replace(chr(10), "<br>")}</div></div>
-    <div style="text-align:right"><div class="label">Status</div><div>{status}</div></div>
+    <div style="text-align:right"><div class="label">Status</div><div>{status}</div>
+      <div class="muted">{method}</div></div>
   </div>
   <table>
     <thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
-    <tbody>{rows}<tr class="total"><td colspan="3">Total</td><td class="num">{_money(order.total_amount)}</td></tr></tbody>
+    <tbody>{rows}{extra_rows}<tr class="total"><td colspan="3">Total</td><td class="num">{_money(order.total_amount)}</td></tr></tbody>
   </table>
+  {note}
 </div>
 <div class="actions"><button onclick="window.print()">Print / Save as PDF</button></div>
 </body></html>"""

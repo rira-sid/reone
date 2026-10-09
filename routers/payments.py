@@ -1,5 +1,3 @@
-from datetime import datetime, timezone
-
 import razorpay
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session, joinedload
@@ -10,6 +8,7 @@ from auth import current_business
 from business import DEFAULT_BUSINESS_ID, razorpay_creds, whatsapp_creds
 from database import get_db
 from routers.invoices import invoice_url
+from routers.orders import mark_order_paid
 from whatsapp import WhatsAppSendError, send_message
 
 router = APIRouter(prefix="/payments", tags=["payments"])
@@ -119,16 +118,7 @@ async def razorpay_webhook(business_id: int, request: Request, db: Session = Dep
     if abs(paid_amount - order.total_amount) > 0.01:
         raise HTTPException(status_code=400, detail="Paid amount does not match order total")
 
-    order.is_paid = True
-    order.paid_at = datetime.now(timezone.utc)
-    order.status = "Confirmed"
-    order.razorpay_payment_id = payment_entity["id"]
-
-    for item in order.items:
-        product = db.query(models.Product).filter(models.Product.id == item.product_id).first()
-        if product:
-            product.stock = max(0, product.stock - item.quantity)
-
+    mark_order_paid(db, order, payment_entity["id"])
     db.commit()
 
     # The customer just paid via a link from the chat, so we're inside WhatsApp's 24h window.

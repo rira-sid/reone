@@ -51,12 +51,13 @@ class FakeAI:
 
     def turn(self, **overrides):
         base = dict(language="English", intent="order", reply="ok", cart=[], customer_name=None,
-                    delivery_address=None, ready_to_place_order=False, needs_human=False)
+                    delivery_address=None, ready_to_place_order=False, needs_human=False,
+                    payment_method=None, order_note=None)
         return ai.AssistantTurn(**{**base, **overrides})
 
-    async def run_turn(self, shop_name, conversation, products, image=None, recent_orders=None):
+    async def run_turn(self, shop_name, conversation, products, image=None, recent_orders=None, policies=""):
         self.calls.append({"shop": shop_name, "products": [p.name for p in products], "image": image,
-                           "orders": [o.id for o in recent_orders or []]})
+                           "orders": [o.id for o in recent_orders or []], "policies": policies})
         return self.queue.pop(0) if self.queue else self.turn()
 
 

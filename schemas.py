@@ -7,6 +7,8 @@ class ProductBase(BaseModel):
     price: float
     stock: int = 0
     unit: str = "pcs"
+    category: str | None = None
+    description: str | None = None
 
 
 class ProductCreate(ProductBase):
@@ -18,6 +20,8 @@ class ProductUpdate(BaseModel):
     price: float | None = None
     stock: int | None = None
     unit: str | None = None
+    category: str | None = None
+    description: str | None = None
 
 
 class ProductOut(ProductBase):
@@ -56,6 +60,13 @@ class OrderItemOut(BaseModel):
 class OrderCreate(BaseModel):
     customer: CustomerBase
     items: list[OrderItemCreate]
+    payment_method: str = "online"
+    customer_note: str | None = None
+
+
+class OrderPaymentUpdate(BaseModel):
+    is_paid: bool
+    notify_customer: bool = True
 
 
 class OrderStatusUpdate(BaseModel):
@@ -72,6 +83,9 @@ class OrderOut(BaseModel):
     payment_link_url: str | None = None
     paid_at: datetime | None = None
     tracking_info: str | None = None
+    delivery_fee: float = 0.0
+    payment_method: str = "online"
+    customer_note: str | None = None
     invoice_path: str
     customer_notified: bool | None = None
     created_at: datetime
