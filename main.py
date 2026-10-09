@@ -1,5 +1,7 @@
+import asyncio
 import os
 from collections import deque
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 
@@ -15,7 +17,8 @@ import models
 import auth
 from chatbot import handle_incoming
 from migrate import add_missing_columns
-from routers import products, orders, payments, conversations, settings, invoices
+from reminders import reminder_loop
+from routers import products, orders, payments, conversations, settings, invoices, insights
 
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 
@@ -27,7 +30,14 @@ with SessionLocal() as db:
         db.add(models.Business(id=DEFAULT_BUSINESS_ID, name="My Business"))
         db.commit()
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(reminder_loop())
+    yield
+    task.cancel()
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,6 +56,7 @@ app.include_router(payments.router)
 app.include_router(conversations.router)
 app.include_router(settings.router)
 app.include_router(invoices.router)
+app.include_router(insights.router)
 
 
 @app.get("/webhook")

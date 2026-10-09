@@ -78,6 +78,7 @@ class Order(Base):
     razorpay_payment_id = Column(String, nullable=True, unique=True)
     paid_at = Column(DateTime(timezone=True), nullable=True)
     tracking_info = Column(Text, nullable=True)
+    payment_reminder_sent_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     business = relationship("Business", back_populates="orders")
@@ -130,3 +131,16 @@ class Message(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     conversation = relationship("Conversation", back_populates="messages")
+
+
+class StaffUser(Base):
+    """Extra logins for a business (shop helpers). They can use the inbox, orders and products,
+    but not settings, payment keys or staff management - those stay with the owner."""
+    __tablename__ = "staff_users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=False, index=True)
+    password_hash = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

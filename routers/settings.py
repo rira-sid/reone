@@ -1,10 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from sqlalchemy import func
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 import models
-from auth import current_business, hash_password, verify_password
+from auth import current_business, email_taken, hash_password, owner_business, verify_password
 from business import razorpay_creds, whatsapp_creds
 from database import get_db
 from secrets_box import encrypt
@@ -70,7 +69,7 @@ def get_business(business: models.Business = Depends(current_business)):
 
 @router.patch("", response_model=BusinessOut)
 def update_business(
-    payload: BusinessUpdate, business: models.Business = Depends(current_business), db: Session = Depends(get_db)
+    payload: BusinessUpdate, business: models.Business = Depends(owner_business), db: Session = Depends(get_db)
 ):
     data = payload.model_dump(exclude_unset=True)
     for field in ("name", "phone", "address", "gstin", "razorpay_key_id"):
@@ -107,7 +106,7 @@ def update_business(
 
 @router.post("/password")
 def change_password(
-    payload: PasswordChange, business: models.Business = Depends(current_business), db: Session = Depends(get_db)
+    payload: PasswordChange, business: models.Business = Depends(owner_business), db: Session = Depends(get_db)
 ):
     if not business.owner_email:
         raise HTTPException(status_code=400, detail="Set an email for this business first")
@@ -125,16 +124,81 @@ class EmailUpdate(BaseModel):
 
 
 @router.post("/email")
-def set_email(payload: EmailUpdate, business: models.Business = Depends(current_business), db: Session = Depends(get_db)):
+def set_email(payload: EmailUpdate, business: models.Business = Depends(owner_business), db: Session = Depends(get_db)):
     """Lets the original business (which logs in with DASHBOARD_PASSWORD) add an email login."""
     email = payload.email.strip().lower()
     if "@" not in email:
         raise HTTPException(status_code=400, detail="Enter a valid email")
-    taken = db.query(models.Business).filter(
-        func.lower(models.Business.owner_email) == email, models.Business.id != business.id
-    ).first()
-    if taken:
+    if email_taken(db, email, exclude_business_id=business.id):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
     business.owner_email = email
     db.commit()
     return {"status": "ok"}
+
+
+# ---- staff logins (owner only) ---------------------------------------------------------
+
+class StaffIn(BaseModel):
+    name: str
+    email: str
+    password: str
+
+
+class StaffOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    email: str
+
+
+class StaffPassword(BaseModel):
+    password: str
+
+
+@router.get("/staff", response_model=list[StaffOut])
+def list_staff(business: models.Business = Depends(owner_business), db: Session = Depends(get_db)):
+    return db.query(models.StaffUser).filter(models.StaffUser.business_id == business.id).order_by(models.StaffUser.id).all()
+
+
+@router.post("/staff", response_model=StaffOut)
+def add_staff(payload: StaffIn, business: models.Business = Depends(owner_business), db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+    if "@" not in email or not payload.name.strip():
+        raise HTTPException(status_code=400, detail="Name and a valid email are required")
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if email_taken(db, email):
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
+    staff = models.StaffUser(business_id=business.id, name=payload.name.strip(), email=email,
+                             password_hash=hash_password(payload.password))
+    db.add(staff)
+    db.commit()
+    db.refresh(staff)
+    return staff
+
+
+def _get_staff(db: Session, business: models.Business, staff_id: int) -> models.StaffUser:
+    staff = db.query(models.StaffUser).filter(
+        models.StaffUser.id == staff_id, models.StaffUser.business_id == business.id
+    ).first()
+    if not staff:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+    return staff
+
+
+@router.post("/staff/{staff_id}/password")
+def reset_staff_password(staff_id: int, payload: StaffPassword, business: models.Business = Depends(owner_business),
+                         db: Session = Depends(get_db)):
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    _get_staff(db, business, staff_id).password_hash = hash_password(payload.password)
+    db.commit()
+    return {"status": "ok"}
+
+
+@router.delete("/staff/{staff_id}")
+def remove_staff(staff_id: int, business: models.Business = Depends(owner_business), db: Session = Depends(get_db)):
+    db.delete(_get_staff(db, business, staff_id))
+    db.commit()
+    return {"status": "deleted"}

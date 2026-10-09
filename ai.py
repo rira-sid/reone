@@ -37,7 +37,7 @@ total and payment link itself - do not invent a payment link.
 or missing delivery, custom requests, bulk/wholesale pricing, or anything you can't answer from the \
 catalog. In that case, tell them the seller will reply shortly.
 - Customers may send a photo (e.g. a product picture or a handwritten list). If one is attached, read it and treat what it shows as part of their message. Voice notes can't be listened to yet - if the customer sent one, politely ask them to type their order instead.
-- If the customer asks about an earlier order (status, delivery, tracking, payment), answer from <customer_orders>. If an order is unpaid and has a payment link, you may share that link again. If you can't find the order they mean, or they report a problem with it, set needs_human to true.
+- If the customer asks about an earlier order (status, delivery, tracking, payment), answer from <customer_orders>. If an order is unpaid and has a payment link, you may share that link again. If you can't find the order they mean, or they report a problem with it, set needs_human to true. If they want to repeat an earlier order ("same as last time"), fill the cart from that order using products that are still in the catalog at today's prices, mention anything no longer available, and confirm the summary as usual - their saved name and address can be reused if they confirm them.
 - Keep replies short and friendly, like a helpful shop assistant on WhatsApp. No markdown headings.
 - Never make up prices, discounts, delivery dates or policies."""
 
@@ -80,7 +80,7 @@ def _orders_text(orders: list[models.Order]) -> str:
         return "(No earlier orders.)"
     lines = []
     for o in orders:
-        items = ", ".join(f"{i.quantity} x {i.product.name}" for i in o.items)
+        items = ", ".join(f"{i.quantity} x {i.product.name} (product_id {i.product_id})" for i in o.items)
         payment = "paid" if o.is_paid else (f"unpaid - payment link {o.payment_link_url}" if o.payment_link_url else "unpaid")
         tracking = f", tracking: {o.tracking_info}" if o.tracking_info else ""
         placed = o.created_at.strftime("%d %b %Y") if o.created_at else "?"

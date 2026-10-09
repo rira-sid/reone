@@ -318,3 +318,71 @@ def test_deleting_ordered_product_keeps_history(client, fake_ai):
 def test_owner_business_still_works_with_password(client):
     h = owner_headers(client)
     assert client.get("/business", headers=h).json()["id"] == 1
+
+
+# ---- payment reminders ---------------------------------------------------------------------
+
+def test_payment_reminder_sent_once(client, fake_ai, fake_whatsapp):
+    import asyncio
+    import reminders
+    _, h = new_seller(client, wa_phone_number_id="PN_REMIND", wa_token="t")
+    product = add_product(client, h)
+    order_id = place_whatsapp_order(client, fake_ai, "PN_REMIND", "919000000020", product["id"])
+    with SessionLocal() as db:
+        db.get(models.Order, order_id).payment_link_url = "https://rzp.io/test"
+        db.commit()
+
+    now = datetime.now(timezone.utc)
+    assert asyncio.run(reminders.send_due_reminders(now)) == 0  # too early
+    later = now + timedelta(hours=3)
+    sent_before = len(fake_whatsapp.sent)
+    asyncio.run(reminders.send_due_reminders(later))
+    mine = [m for m in fake_whatsapp.sent[sent_before:] if m[1] == "919000000020"]
+    assert len(mine) == 1 and "https://rzp.io/test" in mine[0][3]
+    asyncio.run(reminders.send_due_reminders(later + timedelta(hours=1)))
+    assert len([m for m in fake_whatsapp.sent if m[1] == "919000000020" and "reminder" in m[3].lower()]) == 1
+
+
+# ---- stats & customers ---------------------------------------------------------------------
+
+def test_stats_and_customers(client, fake_ai):
+    business_id, h = new_seller(client, wa_phone_number_id="PN_STATS", wa_token="t", razorpay_webhook_secret="s")
+    product = add_product(client, h, name="Ghee", price=200, stock=3)
+    paid_id = place_whatsapp_order(client, fake_ai, "PN_STATS", "919000000021", product["id"], qty=1)
+    place_whatsapp_order(client, fake_ai, "PN_STATS", "919000000021", product["id"], qty=1)
+    body = razorpay_event(paid_id, 200)
+    client.post(f"/payments/webhook/razorpay/{business_id}", content=body, headers=signed("s", body))
+
+    stats = client.get("/stats", headers=h).json()
+    assert stats["today"] == {"orders": 2, "revenue": 200}
+    assert stats["unpaid"] == {"orders": 1, "amount": 200}
+    assert stats["to_ship"] == 1 and stats["low_stock"] == 1
+    assert stats["top_products"][0] == {"name": "Ghee", "quantity": 1, "revenue": 200}
+    assert len(stats["daily"]) == 14 and stats["daily"][-1]["revenue"] == 200
+
+    customers = client.get("/customers", headers=h).json()
+    assert len(customers) == 1
+    assert customers[0]["orders"] == 2 and customers[0]["total_spent"] == 200 and customers[0]["name"] == "Ravi"
+
+
+# ---- staff ---------------------------------------------------------------------------------
+
+def test_staff_permissions(client):
+    _, owner = new_seller(client)
+    r = client.post("/business/staff", json={"name": "Kumar", "email": "kumar@shop.in", "password": "helper123"}, headers=owner)
+    assert r.status_code == 200
+    staff_id = r.json()["id"]
+    assert client.post("/business/staff", json={"name": "Dup", "email": "KUMAR@shop.in", "password": "helper123"},
+                       headers=owner).status_code == 409
+
+    login = client.post("/auth/login", json={"email": "kumar@shop.in", "password": "helper123"})
+    assert login.status_code == 200
+    staff = {"Authorization": f"Bearer {login.json()['token']}"}
+    assert client.get("/auth/me", headers=staff).json()["role"] == "staff"
+    assert client.get("/orders", headers=staff).status_code == 200
+    assert client.get("/business", headers=staff).status_code == 200
+    assert client.patch("/business", json={"name": "Hacked"}, headers=staff).status_code == 403
+    assert client.get("/business/staff", headers=staff).status_code == 403
+
+    client.delete(f"/business/staff/{staff_id}", headers=owner)
+    assert client.get("/orders", headers=staff).status_code == 401  # removed staff lose access at once

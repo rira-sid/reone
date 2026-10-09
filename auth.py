@@ -17,6 +17,7 @@ import hmac
 import os
 import secrets
 import time
+from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
@@ -74,34 +75,71 @@ def sign_value(value: str) -> str:
     return _sign(f"link:{value}")[:32]
 
 
-def issue_token(business_id: int) -> tuple[str, int]:
+def issue_token(business_id: int, staff_id: int = 0) -> tuple[str, int]:
+    """staff_id 0 means the business owner."""
     expires_at = int(time.time()) + TOKEN_TTL_SECONDS
-    payload = f"{business_id}:{expires_at}"
+    payload = f"{business_id}:{staff_id}:{expires_at}"
     token = base64.urlsafe_b64encode(f"{payload}.{_sign(payload)}".encode()).decode()
     return token, expires_at
 
 
-def _business_id_from_token(token: str) -> int | None:
+def _read_token(token: str) -> tuple[int, int] | None:
+    """Returns (business_id, staff_id) for a valid, unexpired token."""
     try:
         payload, signature = base64.urlsafe_b64decode(token.encode()).decode().split(".", 1)
-        business_id, expires_at = (int(part) for part in payload.split(":"))
+        business_id, staff_id, expires_at = (int(part) for part in payload.split(":"))
     except (ValueError, UnicodeDecodeError):
         return None
     if not hmac.compare_digest(signature, _sign(payload)) or expires_at <= time.time():
         return None
-    return business_id
+    return business_id, staff_id
 
 
-def current_business(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> models.Business:
+@dataclass
+class CurrentUser:
+    business: models.Business
+    staff: models.StaffUser | None  # None = the owner
+
+    @property
+    def is_owner(self) -> bool:
+        return self.staff is None
+
+
+def current_user(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> CurrentUser:
     scheme, _, token = (authorization or "").partition(" ")
     if not token and not DASHBOARD_PASSWORD:
-        business_id = DEFAULT_BUSINESS_ID  # legacy open mode, see module docstring
+        ids = (DEFAULT_BUSINESS_ID, 0)  # legacy open mode, see module docstring
     else:
-        business_id = _business_id_from_token(token) if scheme.lower() == "bearer" else None
-    business = db.get(models.Business, business_id) if business_id else None
+        ids = _read_token(token) if scheme.lower() == "bearer" else None
+    business = db.get(models.Business, ids[0]) if ids else None
     if not business:
         raise HTTPException(status_code=401, detail="Please log in")
-    return business
+    staff = None
+    if ids[1]:
+        staff = db.get(models.StaffUser, ids[1])
+        if not staff or staff.business_id != business.id:  # removed staff lose access immediately
+            raise HTTPException(status_code=401, detail="Please log in")
+    return CurrentUser(business, staff)
+
+
+def current_business(user: CurrentUser = Depends(current_user)) -> models.Business:
+    return user.business
+
+
+def owner_business(user: CurrentUser = Depends(current_user)) -> models.Business:
+    """For settings, payment keys and staff management - owner only."""
+    if not user.is_owner:
+        raise HTTPException(status_code=403, detail="Only the shop owner can do this")
+    return user.business
+
+
+def email_taken(db: Session, email: str, exclude_business_id: int | None = None) -> bool:
+    """Emails are unique across owners and staff, since one login form serves both."""
+    owner = db.query(models.Business).filter(func.lower(models.Business.owner_email) == email)
+    if exclude_business_id:
+        owner = owner.filter(models.Business.id != exclude_business_id)
+    staff = db.query(models.StaffUser).filter(func.lower(models.StaffUser.email) == email)
+    return owner.first() is not None or staff.first() is not None
 
 
 # ---- endpoints -----------------------------------------------------------------------------
@@ -124,8 +162,8 @@ class TokenOut(BaseModel):
     business_id: int
 
 
-def _token_response(business_id: int) -> dict:
-    token, expires_at = issue_token(business_id)
+def _token_response(business_id: int, staff_id: int = 0) -> dict:
+    token, expires_at = issue_token(business_id, staff_id)
     return {"token": token, "expires_at": expires_at, "business_id": business_id}
 
 
@@ -141,6 +179,11 @@ async def login(payload: LoginIn, db: Session = Depends(get_db)):
         ).first()
         if business and verify_password(payload.password, business.password_hash):
             return _token_response(business.id)
+        staff = db.query(models.StaffUser).filter(
+            func.lower(models.StaffUser.email) == _normalise_email(payload.email)
+        ).first()
+        if not business and staff and verify_password(payload.password, staff.password_hash):
+            return _token_response(staff.business_id, staff.id)
     elif not DASHBOARD_PASSWORD:
         return _token_response(DEFAULT_BUSINESS_ID)
     elif hmac.compare_digest(payload.password.encode(), DASHBOARD_PASSWORD.encode()):
@@ -162,7 +205,7 @@ async def signup(payload: SignupIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Business name and a valid email are required")
     if len(payload.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
-    if db.query(models.Business).filter(func.lower(models.Business.owner_email) == email).first():
+    if email_taken(db, email):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
 
     business = models.Business(
@@ -171,3 +214,20 @@ async def signup(payload: SignupIn, db: Session = Depends(get_db)):
     db.add(business)
     db.commit()
     return _token_response(business.id)
+
+
+class MeOut(BaseModel):
+    business_id: int
+    business_name: str
+    role: str
+    name: str | None
+
+
+@router.get("/me", response_model=MeOut)
+def me(user: CurrentUser = Depends(current_user)):
+    return {
+        "business_id": user.business.id,
+        "business_name": user.business.name,
+        "role": "owner" if user.is_owner else "staff",
+        "name": user.staff.name if user.staff else None,
+    }
