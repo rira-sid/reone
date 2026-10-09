@@ -12,6 +12,22 @@ class Business(Base):
     name = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    # Login
+    owner_email = Column(String, nullable=True, index=True)
+    password_hash = Column(String, nullable=True)
+
+    # Shown on invoices
+    phone = Column(String, nullable=True)
+    address = Column(Text, nullable=True)
+    gstin = Column(String, nullable=True)
+
+    # Seller's own accounts. Secrets are encrypted (see secrets_box.py).
+    wa_phone_number_id = Column(String, nullable=True, index=True)
+    wa_token_enc = Column(Text, nullable=True)
+    razorpay_key_id = Column(String, nullable=True)
+    razorpay_key_secret_enc = Column(Text, nullable=True)
+    razorpay_webhook_secret_enc = Column(Text, nullable=True)
+
     products = relationship("Product", back_populates="business")
     orders = relationship("Order", back_populates="business")
 
@@ -57,6 +73,8 @@ class Order(Base):
     razorpay_payment_link_id = Column(String, nullable=True, index=True)
     payment_link_url = Column(String, nullable=True)
     razorpay_payment_id = Column(String, nullable=True, unique=True)
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+    tracking_info = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     business = relationship("Business", back_populates="orders")
@@ -90,6 +108,8 @@ class Conversation(Base):
     language = Column(String, nullable=True)
     cart_json = Column(Text, default="[]")
     ai_paused = Column(Boolean, default=False, nullable=False)
+    # WhatsApp only allows free-form messages within 24h of the customer's last message.
+    last_customer_message_at = Column(DateTime(timezone=True), nullable=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     messages = relationship("Message", back_populates="conversation", order_by="Message.id")

@@ -3,21 +3,20 @@ from sqlalchemy.orm import Session
 
 import models
 import schemas
-from auth import require_auth
+from auth import current_business
 from database import get_db
-from business import DEFAULT_BUSINESS_ID
 
-router = APIRouter(prefix="/products", tags=["products"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/products", tags=["products"])
 
 
 @router.get("", response_model=list[schemas.ProductOut])
-def list_products(db: Session = Depends(get_db)):
-    return db.query(models.Product).filter(models.Product.business_id == DEFAULT_BUSINESS_ID).all()
+def list_products(db: Session = Depends(get_db), business: models.Business = Depends(current_business)):
+    return db.query(models.Product).filter(models.Product.business_id == business.id).all()
 
 
 @router.post("", response_model=schemas.ProductOut)
-def create_product(payload: schemas.ProductCreate, db: Session = Depends(get_db)):
-    product = models.Product(business_id=DEFAULT_BUSINESS_ID, **payload.model_dump())
+def create_product(payload: schemas.ProductCreate, db: Session = Depends(get_db), business: models.Business = Depends(current_business)):
+    product = models.Product(business_id=business.id, **payload.model_dump())
     db.add(product)
     db.commit()
     db.refresh(product)
@@ -25,9 +24,9 @@ def create_product(payload: schemas.ProductCreate, db: Session = Depends(get_db)
 
 
 @router.patch("/{product_id}", response_model=schemas.ProductOut)
-def update_product(product_id: int, payload: schemas.ProductUpdate, db: Session = Depends(get_db)):
+def update_product(product_id: int, payload: schemas.ProductUpdate, db: Session = Depends(get_db), business: models.Business = Depends(current_business)):
     product = db.query(models.Product).filter(
-        models.Product.id == product_id, models.Product.business_id == DEFAULT_BUSINESS_ID
+        models.Product.id == product_id, models.Product.business_id == business.id
     ).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -39,9 +38,9 @@ def update_product(product_id: int, payload: schemas.ProductUpdate, db: Session 
 
 
 @router.delete("/{product_id}")
-def delete_product(product_id: int, db: Session = Depends(get_db)):
+def delete_product(product_id: int, db: Session = Depends(get_db), business: models.Business = Depends(current_business)):
     product = db.query(models.Product).filter(
-        models.Product.id == product_id, models.Product.business_id == DEFAULT_BUSINESS_ID
+        models.Product.id == product_id, models.Product.business_id == business.id
     ).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")

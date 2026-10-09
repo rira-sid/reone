@@ -10,15 +10,17 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import Base, engine, SessionLocal
-from business import DEFAULT_BUSINESS_ID
+from business import DEFAULT_BUSINESS_ID, business_for_phone_number_id
 import models
 import auth
 from chatbot import handle_incoming
-from routers import products, orders, payments, conversations
+from migrate import add_missing_columns
+from routers import products, orders, payments, conversations, settings, invoices
 
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 
 Base.metadata.create_all(bind=engine)
+add_missing_columns(engine)
 
 with SessionLocal() as db:
     if not db.query(models.Business).filter(models.Business.id == DEFAULT_BUSINESS_ID).first():
@@ -42,6 +44,8 @@ app.include_router(products.router)
 app.include_router(orders.router)
 app.include_router(payments.router)
 app.include_router(conversations.router)
+app.include_router(settings.router)
+app.include_router(invoices.router)
 
 
 @app.get("/webhook")
@@ -73,35 +77,64 @@ def _already_processed(message_id: str) -> bool:
     return False
 
 
+# What gets stored/shown for message types the AI can't read as text.
+_PLACEHOLDERS = {
+    "audio": "[voice note]",
+    "video": "[video]",
+    "document": "[document]",
+    "sticker": "[sticker]",
+    "location": "[location pin]",
+}
+
+
 @app.post("/webhook")
 async def receive_message(request: Request, background_tasks: BackgroundTasks):
     body = await request.json()
     print("INCOMING:", body)
 
-    try:
-        entry = body["entry"][0]["changes"][0]["value"]
-        messages = entry.get("messages")
-        if messages:
-            msg = messages[0]
-            message_id = msg.get("id")
-            if message_id and _already_processed(message_id):
-                print(f"Duplicate delivery for {message_id}, skipping")
-            else:
-                from_number = msg["from"]
-                if msg.get("type") == "text":
+    # One delivery can batch several messages, possibly for different sellers' numbers.
+    for entry in body.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
+            messages = value.get("messages")
+            if not messages:
+                continue  # delivery/read status updates etc.
+
+            phone_number_id = value.get("metadata", {}).get("phone_number_id")
+            with SessionLocal() as db:
+                business = business_for_phone_number_id(db, phone_number_id)
+            if not business:
+                print(f"No business connected to phone_number_id {phone_number_id}, ignoring")
+                continue
+
+            contacts = value.get("contacts") or [{}]
+            profile_name = contacts[0].get("profile", {}).get("name")
+
+            for msg in messages:
+                message_id = msg.get("id")
+                if message_id and _already_processed(message_id):
+                    print(f"Duplicate delivery for {message_id}, skipping")
+                    continue
+                from_number = msg.get("from")
+                if not from_number:
+                    continue
+
+                msg_type = msg.get("type")
+                image_media_id = None
+                if msg_type == "text":
                     text = msg["text"]["body"]
+                elif msg_type == "image":
+                    image_media_id = msg["image"].get("id")
+                    caption = msg["image"].get("caption")
+                    text = f"[photo] {caption}" if caption else "[photo]"
+                elif msg_type == "button":
+                    text = msg["button"].get("text", "")
                 else:
-                    # Voice notes, images etc. aren't understood yet - let the AI ask for text.
-                    text = f"[customer sent a {msg.get('type', 'non-text')} message]"
-                contacts = entry.get("contacts") or [{}]
-                profile_name = contacts[0].get("profile", {}).get("name")
-                print(f"Message from {from_number}: {text}")
+                    text = _PLACEHOLDERS.get(msg_type, f"[{msg_type or 'unsupported'} message]")
+                print(f"Message for business {business.id} from {from_number}: {text}")
                 # Reply in the background so we can return 200 to Meta immediately -
                 # otherwise a slow cold-start response makes Meta assume delivery failed
                 # and resend the same message, which is what caused the duplicate-reply bug.
-                background_tasks.add_task(handle_incoming, from_number, text, profile_name)
-    except (KeyError, IndexError):
-        pass
+                background_tasks.add_task(handle_incoming, business.id, from_number, text, profile_name, image_media_id)
 
     return {"status": "ok"}
-

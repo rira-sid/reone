@@ -1,34 +1,70 @@
-import os
-
+"""WhatsApp Cloud API calls, always made with the sending business's own credentials."""
 import httpx
 
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
-WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
-GRAPH_URL = f"https://graph.facebook.com/v21.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+from business import WhatsAppCreds
+
+GRAPH_BASE = "https://graph.facebook.com/v21.0"
 
 
 class WhatsAppSendError(Exception):
     pass
 
 
-async def send_message(to: str, text: str):
-    """Send a text message; raises WhatsAppSendError if Meta rejects it or can't be reached."""
-    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "text",
-        "text": {"body": text},
-    }
+def _error_detail(resp: httpx.Response) -> str:
+    try:
+        return resp.json()["error"]["message"]
+    except (ValueError, KeyError, TypeError):
+        return resp.text
+
+
+async def _post_message(creds: WhatsAppCreds | None, payload: dict):
+    if creds is None:
+        raise WhatsAppSendError("WhatsApp is not connected for this business")
+    headers = {"Authorization": f"Bearer {creds.token}"}
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(GRAPH_URL, headers=headers, json=payload)
+            resp = await client.post(f"{GRAPH_BASE}/{creds.phone_number_id}/messages", headers=headers, json=payload)
     except httpx.HTTPError as e:
         raise WhatsAppSendError(f"Could not reach WhatsApp: {e!r}") from e
     print("SEND RESPONSE:", resp.status_code, resp.text)
     if resp.status_code >= 400:
-        try:
-            detail = resp.json()["error"]["message"]
-        except (ValueError, KeyError, TypeError):
-            detail = resp.text
-        raise WhatsAppSendError(f"WhatsApp rejected the message: {detail}")
+        raise WhatsAppSendError(f"WhatsApp rejected the message: {_error_detail(resp)}")
+
+
+async def send_message(creds: WhatsAppCreds | None, to: str, text: str):
+    """Send a free-form text. Only works within 24h of the customer's last message.
+    Raises WhatsAppSendError if Meta rejects it or can't be reached."""
+    await _post_message(creds, {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}})
+
+
+async def send_template(creds: WhatsAppCreds | None, to: str, name: str, language: str, params: list[str]):
+    """Send a Meta-approved template - the only kind of message allowed outside the 24h window."""
+    await _post_message(creds, {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "template",
+        "template": {
+            "name": name,
+            "language": {"code": language},
+            "components": [{"type": "body", "parameters": [{"type": "text", "text": p} for p in params]}],
+        },
+    })
+
+
+async def download_media(creds: WhatsAppCreds | None, media_id: str) -> tuple[bytes, str]:
+    """Fetch an image/voice note a customer sent. Returns (bytes, mime_type)."""
+    if creds is None:
+        raise WhatsAppSendError("WhatsApp is not connected for this business")
+    headers = {"Authorization": f"Bearer {creds.token}"}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            meta = await client.get(f"{GRAPH_BASE}/{media_id}", headers=headers)
+            if meta.status_code >= 400:
+                raise WhatsAppSendError(f"Could not look up media: {_error_detail(meta)}")
+            info = meta.json()
+            media = await client.get(info["url"], headers=headers)
+            if media.status_code >= 400:
+                raise WhatsAppSendError(f"Could not download media ({media.status_code})")
+    except httpx.HTTPError as e:
+        raise WhatsAppSendError(f"Could not reach WhatsApp: {e!r}") from e
+    return media.content, info.get("mime_type", "application/octet-stream")

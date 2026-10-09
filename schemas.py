@@ -63,6 +63,8 @@ class OrderCreate(BaseModel):
 
 class OrderStatusUpdate(BaseModel):
     status: str
+    tracking_info: str | None = None
+    notify_customer: bool = True
 
 
 class OrderOut(BaseModel):
@@ -71,6 +73,10 @@ class OrderOut(BaseModel):
     total_amount: float
     is_paid: bool
     payment_link_url: str | None = None
+    paid_at: datetime | None = None
+    tracking_info: str | None = None
+    invoice_path: str
+    customer_notified: bool | None = None
     created_at: datetime
     customer: CustomerOut
     items: list[OrderItemOut]

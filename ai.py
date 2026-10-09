@@ -1,5 +1,6 @@
 """Claude-powered order assistant: reads the customer's WhatsApp message, keeps the cart up to
 date, collects name + address, and replies in the customer's own language - all in one call."""
+import base64
 import json
 from typing import Literal
 
@@ -35,6 +36,7 @@ total and payment link itself - do not invent a payment link.
 - Set needs_human to true when the customer asks for a person, complains, asks about refunds, a damaged \
 or missing delivery, custom requests, bulk/wholesale pricing, or anything you can't answer from the \
 catalog. In that case, tell them the seller will reply shortly.
+- Customers may send a photo (e.g. a product picture or a handwritten list). If one is attached, read it and treat what it shows as part of their message. Voice notes can't be listened to yet - if the customer sent one, politely ask them to type their order instead.
 - Keep replies short and friendly, like a helpful shop assistant on WhatsApp. No markdown headings.
 - Never make up prices, discounts, delivery dates or policies."""
 
@@ -72,18 +74,36 @@ def _transcript(conversation: models.Conversation) -> str:
     return "\n".join(f"{labels.get(m.sender, m.sender)}: {m.text}" for m in recent)
 
 
-async def run_turn(conversation: models.Conversation, products: list[models.Product]) -> AssistantTurn:
+# Image types the Claude API accepts.
+SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+
+
+async def run_turn(
+    shop_name: str,
+    conversation: models.Conversation,
+    products: list[models.Product],
+    image: tuple[bytes, str] | None = None,
+) -> AssistantTurn:
+    """`image` is an optional (bytes, mime_type) photo attached to the customer's latest message."""
     state = {
         "cart": json.loads(conversation.cart_json or "[]"),
         "customer_name": conversation.customer_name,
         "delivery_address": conversation.delivery_address,
     }
-    user_content = (
+    prompt = (
+        f"<shop>{shop_name}</shop>\n\n"
         f"<catalog>\n{_catalog_text(products)}\n</catalog>\n\n"
         f"<collected_so_far>\n{json.dumps(state, ensure_ascii=False)}\n</collected_so_far>\n\n"
         f"<conversation>\n{_transcript(conversation)}\n</conversation>\n\n"
         "Respond to the customer's latest message."
     )
+    user_content: list[dict] = []
+    if image and image[1] in SUPPORTED_IMAGE_TYPES:
+        user_content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": image[1], "data": base64.standard_b64encode(image[0]).decode()},
+        })
+    user_content.append({"type": "text", "text": prompt})
 
     response = await _client.messages.parse(
         model=MODEL,
