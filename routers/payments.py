@@ -35,9 +35,15 @@ def create_payment_link(order_id: int, db: Session = Depends(get_db)):
     if order.is_paid:
         raise HTTPException(status_code=400, detail="Order is already paid")
 
+    return {"order_id": order.id, "payment_link_url": ensure_payment_link(db, order)}
+
+
+def ensure_payment_link(db: Session, order: models.Order) -> str:
+    """Return the order's Razorpay link, creating it on first call. Raises HTTPException(503)
+    if Razorpay isn't configured on this server."""
     # Idempotent: reuse the existing link instead of generating a new one on every call.
     if order.payment_link_url:
-        return {"order_id": order.id, "payment_link_url": order.payment_link_url}
+        return order.payment_link_url
 
     client = _client()
     link = client.payment_link.create({
@@ -56,8 +62,7 @@ def create_payment_link(order_id: int, db: Session = Depends(get_db)):
     order.razorpay_payment_link_id = link["id"]
     order.payment_link_url = link["short_url"]
     db.commit()
-
-    return {"order_id": order.id, "payment_link_url": order.payment_link_url}
+    return order.payment_link_url
 
 
 @router.post("/webhook/razorpay")

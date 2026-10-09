@@ -1,22 +1,21 @@
 import os
 from collections import deque
 
-import httpx
+from dotenv import load_dotenv
+
+# Load .env before importing modules that read env vars at import time (ai, whatsapp, payments).
+load_dotenv()
+
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
 
 from database import Base, engine, SessionLocal
 from business import DEFAULT_BUSINESS_ID
 import models
-from routers import products, orders, payments
+from chatbot import handle_incoming
+from routers import products, orders, payments, conversations
 
-load_dotenv()
-
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
-WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
-GRAPH_URL = f"https://graph.facebook.com/v21.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
 
 Base.metadata.create_all(bind=engine)
 
@@ -40,6 +39,7 @@ app.add_middleware(
 app.include_router(products.router)
 app.include_router(orders.router)
 app.include_router(payments.router)
+app.include_router(conversations.router)
 
 
 @app.get("/webhook")
@@ -86,26 +86,20 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
                 print(f"Duplicate delivery for {message_id}, skipping")
             else:
                 from_number = msg["from"]
-                text = msg.get("text", {}).get("body", "")
+                if msg.get("type") == "text":
+                    text = msg["text"]["body"]
+                else:
+                    # Voice notes, images etc. aren't understood yet - let the AI ask for text.
+                    text = f"[customer sent a {msg.get('type', 'non-text')} message]"
+                contacts = entry.get("contacts") or [{}]
+                profile_name = contacts[0].get("profile", {}).get("name")
                 print(f"Message from {from_number}: {text}")
                 # Reply in the background so we can return 200 to Meta immediately -
                 # otherwise a slow cold-start response makes Meta assume delivery failed
                 # and resend the same message, which is what caused the duplicate-reply bug.
-                background_tasks.add_task(send_message, from_number, f"Got your message: {text}")
+                background_tasks.add_task(handle_incoming, from_number, text, profile_name)
     except (KeyError, IndexError):
         pass
 
     return {"status": "ok"}
 
-
-async def send_message(to: str, text: str):
-    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "text",
-        "text": {"body": text},
-    }
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(GRAPH_URL, headers=headers, json=payload)
-        print("SEND RESPONSE:", resp.status_code, resp.text)

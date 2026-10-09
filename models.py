@@ -75,3 +75,33 @@ class OrderItem(Base):
 
     order = relationship("Order", back_populates="items")
     product = relationship("Product")
+
+
+class Conversation(Base):
+    """One WhatsApp chat with a customer. Holds the in-progress cart and what the AI has
+    collected so far, plus the seller's take-over switch for the live inbox."""
+    __tablename__ = "conversations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False)
+    phone = Column(String, nullable=False, index=True)
+    customer_name = Column(String, nullable=True)
+    delivery_address = Column(Text, nullable=True)
+    language = Column(String, nullable=True)
+    cart_json = Column(Text, default="[]")
+    ai_paused = Column(Boolean, default=False, nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    messages = relationship("Message", back_populates="conversation", order_by="Message.id")
+
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False, index=True)
+    sender = Column(String, nullable=False)  # "customer" | "ai" | "seller"
+    text = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    conversation = relationship("Conversation", back_populates="messages")

@@ -44,18 +44,14 @@ def list_orders(db: Session = Depends(get_db)):
     return [_serialize_order(o) for o in orders]
 
 
-@router.post("", response_model=schemas.OrderOut)
-def create_order(payload: schemas.OrderCreate, db: Session = Depends(get_db)):
-    customer = models.Customer(business_id=DEFAULT_BUSINESS_ID, **payload.customer.model_dump())
-    db.add(customer)
-    db.flush()
-
+def place_order(db: Session, customer: models.Customer, items: list[schemas.OrderItemCreate]) -> models.Order:
+    """Create an order (and its line items) for an already-added customer. Caller commits."""
     total = 0.0
     order = models.Order(business_id=DEFAULT_BUSINESS_ID, customer_id=customer.id, status="Pending")
     db.add(order)
     db.flush()
 
-    for item in payload.items:
+    for item in items:
         product = db.query(models.Product).filter(
             models.Product.id == item.product_id, models.Product.business_id == DEFAULT_BUSINESS_ID
         ).first()
@@ -71,6 +67,16 @@ def create_order(payload: schemas.OrderCreate, db: Session = Depends(get_db)):
         ))
 
     order.total_amount = total
+    return order
+
+
+@router.post("", response_model=schemas.OrderOut)
+def create_order(payload: schemas.OrderCreate, db: Session = Depends(get_db)):
+    customer = models.Customer(business_id=DEFAULT_BUSINESS_ID, **payload.customer.model_dump())
+    db.add(customer)
+    db.flush()
+
+    order = place_order(db, customer, payload.items)
     db.commit()
     db.refresh(order)
     return _serialize_order(order)
