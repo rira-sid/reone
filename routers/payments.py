@@ -6,8 +6,10 @@ from sqlalchemy.orm import Session, joinedload
 
 import models
 import schemas
+from auth import require_auth
 from database import get_db
 from business import DEFAULT_BUSINESS_ID
+from whatsapp import WhatsAppSendError, send_message
 
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
@@ -22,7 +24,7 @@ def _client() -> razorpay.Client:
     return razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
 
-@router.post("/{order_id}/link", response_model=schemas.PaymentLinkOut)
+@router.post("/{order_id}/link", response_model=schemas.PaymentLinkOut, dependencies=[Depends(require_auth)])
 def create_payment_link(order_id: int, db: Session = Depends(get_db)):
     order = (
         db.query(models.Order)
@@ -90,10 +92,12 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
     except (KeyError, TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Missing or invalid reference_id")
 
+    # Row lock (Postgres) so two near-simultaneous deliveries of the same event can't both
+    # pass the is_paid check below. SQLite ignores FOR UPDATE, which is fine for local dev.
     order = (
         db.query(models.Order)
-        .options(joinedload(models.Order.items))
         .filter(models.Order.id == order_id, models.Order.business_id == DEFAULT_BUSINESS_ID)
+        .with_for_update()
         .first()
     )
     if not order:
@@ -117,4 +121,14 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
             product.stock = max(0, product.stock - item.quantity)
 
     db.commit()
+
+    try:
+        await send_message(
+            order.customer.phone,
+            f"Payment received for Order #{order.id} (₹{order.total_amount:g}). Thank you! "
+            "We'll let you know when it ships.",
+        )
+    except WhatsAppSendError as e:
+        # Payment is already recorded - a failed confirmation message shouldn't fail the webhook.
+        print("PAYMENT CONFIRMATION NOT DELIVERED:", e)
     return {"status": "ok"}

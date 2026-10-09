@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import Base, engine, SessionLocal
 from business import DEFAULT_BUSINESS_ID
 import models
+import auth
 from chatbot import handle_incoming
 from routers import products, orders, payments, conversations
 
@@ -36,6 +37,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
 app.include_router(products.router)
 app.include_router(orders.router)
 app.include_router(payments.router)

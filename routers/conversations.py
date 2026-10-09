@@ -6,10 +6,11 @@ from sqlalchemy.orm import Session
 
 import models
 from business import DEFAULT_BUSINESS_ID
+from auth import require_auth
 from database import get_db
 from whatsapp import WhatsAppSendError, send_message
 
-router = APIRouter(prefix="/conversations", tags=["conversations"])
+router = APIRouter(prefix="/conversations", tags=["conversations"], dependencies=[Depends(require_auth)])
 
 
 class ConversationOut(BaseModel):

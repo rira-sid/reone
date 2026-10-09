@@ -3,10 +3,11 @@ from sqlalchemy.orm import Session
 
 import models
 import schemas
+from auth import require_auth
 from database import get_db
 from business import DEFAULT_BUSINESS_ID
 
-router = APIRouter(prefix="/products", tags=["products"])
+router = APIRouter(prefix="/products", tags=["products"], dependencies=[Depends(require_auth)])
 
 
 @router.get("", response_model=list[schemas.ProductOut])

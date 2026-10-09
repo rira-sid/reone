@@ -3,11 +3,12 @@ from sqlalchemy.orm import Session, joinedload
 
 import models
 import schemas
+from auth import require_auth
 from database import get_db
 from business import DEFAULT_BUSINESS_ID
 from models import ORDER_STATUSES
 
-router = APIRouter(prefix="/orders", tags=["orders"])
+router = APIRouter(prefix="/orders", tags=["orders"], dependencies=[Depends(require_auth)])
 
 
 def _serialize_order(order: models.Order) -> dict:
