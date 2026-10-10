@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 import ai  # noqa: E402
 import chatbot  # noqa: E402
 import main  # noqa: E402
+import voice  # noqa: E402
 import whatsapp  # noqa: E402
 
 
@@ -35,10 +36,13 @@ class FakeWhatsApp:
     async def post(self, creds, payload):
         if creds is None or self.fail:
             raise whatsapp.WhatsAppSendError("fake failure")
-        body = payload.get("text", {}).get("body") or payload.get("template", {}).get("name")
+        body = (payload.get("text", {}).get("body") or payload.get("template", {}).get("name")
+                or payload.get("audio", {}).get("id"))
         self.sent.append((creds.phone_number_id, payload["to"], payload["type"], body))
 
     async def download(self, creds, media_id):
+        if media_id.startswith("AUDIO"):
+            return b"OggSfake-voice", "audio/ogg; codecs=opus"
         return b"\xff\xd8fake-jpeg", "image/jpeg"
 
 
@@ -55,9 +59,10 @@ class FakeAI:
                     payment_method=None, order_note=None)
         return ai.AssistantTurn(**{**base, **overrides})
 
-    async def run_turn(self, shop_name, conversation, products, image=None, recent_orders=None, policies=""):
+    async def run_turn(self, shop_name, conversation, products, image=None, recent_orders=None, policies="",
+                       audio=None):
         self.calls.append({"shop": shop_name, "products": [p.name for p in products], "image": image,
-                           "orders": [o.id for o in recent_orders or []], "policies": policies})
+                           "orders": [o.id for o in recent_orders or []], "policies": policies, "audio": audio})
         return self.queue.pop(0) if self.queue else self.turn()
 
 
@@ -79,3 +84,21 @@ def fake_ai(monkeypatch):
     fake = FakeAI()
     monkeypatch.setattr(ai, "run_turn", fake.run_turn)
     return fake
+
+
+@pytest.fixture
+def fake_voice(monkeypatch):
+    """Turn voice replies on, with fake speech synthesis and media upload. Records spoken texts."""
+    spoken = []
+
+    async def synthesize(text):
+        spoken.append(text)
+        return b"fake-mp3"
+
+    async def upload_media(creds, data, mime_type, filename):
+        return "MEDIA_REPLY"
+
+    monkeypatch.setattr(voice, "enabled", lambda: True)
+    monkeypatch.setattr(voice, "synthesize", synthesize)
+    monkeypatch.setattr(whatsapp, "upload_media", upload_media)
+    return spoken

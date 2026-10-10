@@ -51,6 +51,32 @@ async def send_template(creds: WhatsAppCreds | None, to: str, name: str, languag
     })
 
 
+async def send_audio(creds: WhatsAppCreds | None, to: str, data: bytes, mime_type: str = "audio/mpeg"):
+    """Upload an audio file to WhatsApp and send it to the customer as a playable audio message."""
+    media_id = await upload_media(creds, data, mime_type, "reply.mp3")
+    await _post_message(creds, {"messaging_product": "whatsapp", "to": to, "type": "audio", "audio": {"id": media_id}})
+
+
+async def upload_media(creds: WhatsAppCreds | None, data: bytes, mime_type: str, filename: str) -> str:
+    """Upload a file to WhatsApp's media store and return its media id."""
+    if creds is None:
+        raise WhatsAppSendError("WhatsApp is not connected for this business")
+    headers = {"Authorization": f"Bearer {creds.token}"}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{GRAPH_BASE}/{creds.phone_number_id}/media",
+                headers=headers,
+                data={"messaging_product": "whatsapp", "type": mime_type},
+                files={"file": (filename, data, mime_type)},
+            )
+    except httpx.HTTPError as e:
+        raise WhatsAppSendError(f"Could not reach WhatsApp: {e!r}") from e
+    if resp.status_code >= 400:
+        raise WhatsAppSendError(f"WhatsApp rejected the upload: {_error_detail(resp)}")
+    return resp.json()["id"]
+
+
 async def download_media(creds: WhatsAppCreds | None, media_id: str) -> tuple[bytes, str]:
     """Fetch an image/voice note a customer sent. Returns (bytes, mime_type)."""
     if creds is None:

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import ai
 import models
 import schemas
+import voice
 from business import whatsapp_creds
 from database import SessionLocal
 from fastapi import HTTPException
@@ -13,7 +14,7 @@ from fastapi import HTTPException
 from routers.invoices import PUBLIC_BASE_URL
 from routers.orders import place_order
 from routers.payments import ensure_payment_link
-from whatsapp import WhatsAppSendError, download_media, send_message
+from whatsapp import WhatsAppSendError, download_media, send_audio, send_message
 
 HANDOFF_REPLY = "Thanks for your message! The seller will reply to you here shortly."
 
@@ -105,6 +106,7 @@ async def handle_incoming(
     profile_name: str | None = None,
     image_media_id: str | None = None,
     wa_message_id: str | None = None,
+    audio_media_id: str | None = None,
 ):
     with SessionLocal() as db:
         if wa_message_id and db.query(models.Message).filter(models.Message.wa_message_id == wa_message_id).first():
@@ -114,7 +116,8 @@ async def handle_incoming(
         creds = whatsapp_creds(business)
         conversation = _get_or_create_conversation(db, business_id, phone, profile_name)
         conversation.last_customer_message_at = datetime.now(timezone.utc)
-        db.add(models.Message(conversation_id=conversation.id, sender="customer", text=text, wa_message_id=wa_message_id))
+        incoming = models.Message(conversation_id=conversation.id, sender="customer", text=text, wa_message_id=wa_message_id)
+        db.add(incoming)
         db.commit()
         db.refresh(conversation)
 
@@ -127,6 +130,12 @@ async def handle_incoming(
                 image = await download_media(creds, image_media_id)
             except WhatsAppSendError as e:
                 print("IMAGE DOWNLOAD FAILED:", e)
+        audio = None
+        if audio_media_id:
+            try:
+                audio = await download_media(creds, audio_media_id)
+            except WhatsAppSendError as e:
+                print("VOICE NOTE DOWNLOAD FAILED:", e)
 
         products = db.query(models.Product).filter(
             models.Product.business_id == business_id, models.Product.is_active.is_(True)
@@ -140,7 +149,8 @@ async def handle_incoming(
             .all()
         )
         try:
-            turn = await ai.run_turn(business.name, conversation, products, image, recent_orders, shop_policies(business))
+            turn = await ai.run_turn(business.name, conversation, products, image, recent_orders,
+                                     shop_policies(business), audio=audio)
         except Exception as e:
             # Refusal, API outage, missing key, bad output... never leave the customer unanswered.
             print("AI ERROR:", repr(e))
@@ -149,6 +159,8 @@ async def handle_incoming(
             return
 
         print("AI TURN:", turn.model_dump_json())
+        if audio and turn.heard_text:
+            incoming.text = f"🎤 {turn.heard_text}"  # what the seller sees in the inbox, and the AI next turn
         conversation.language = turn.language
         conversation.cart_json = json.dumps([i.model_dump() for i in turn.cart])
         if turn.customer_name:
@@ -158,6 +170,8 @@ async def handle_incoming(
         db.commit()  # keep what the AI collected even if checkout below has to roll back
 
         reply = turn.reply
+        spoken = turn.spoken_reply  # only kept when the AI's own reply goes out unchanged
+        order_placed = False
         if turn.needs_human:
             conversation.ai_paused = True
         elif turn.ready_to_place_order and turn.cart and conversation.customer_name and conversation.delivery_address:
@@ -166,20 +180,41 @@ async def handle_incoming(
             if not business.accepting_orders:
                 # Safety net - the AI is told the shop is closed, but never place an order anyway.
                 reply = business.closed_message or "Sorry, we're not taking orders right now. Please check back soon!"
+                spoken = None
             elif problems:
                 # Stock changed since Claude saw it - let the seller sort it out rather than guess.
                 conversation.ai_paused = True
                 print("STOCK PROBLEM:", problems)
                 reply = HANDOFF_REPLY
+                spoken = None
             else:
                 try:
                     reply = f"{reply}\n\n{_checkout(db, business, conversation, turn.cart, payment_method, turn.order_note)}"
+                    order_placed = True
                 except HTTPException as e:
                     # Broke a shop rule the AI missed (e.g. minimum order) - say so, keep the cart.
                     db.rollback()
                     reply = f"Sorry, we couldn't place this order: {e.detail}. Would you like to add something?"
+                    spoken = None
 
         await _reply(db, creds, conversation, reply)
+        # Answer a voice note with a voice note, and always confirm a new order out loud.
+        if spoken and (audio or order_placed):
+            await _send_voice(db, creds, conversation, spoken)
+
+
+async def _send_voice(db, creds, conversation: models.Conversation, text: str):
+    """Best effort: the text reply has already gone out, so a voice failure only gets logged."""
+    if not voice.enabled():
+        return
+    try:
+        audio = await voice.synthesize(text)
+        await send_audio(creds, conversation.phone, audio)
+    except Exception as e:
+        print("VOICE REPLY NOT SENT:", repr(e))
+        return
+    db.add(models.Message(conversation_id=conversation.id, sender="ai", text=f"🔊 {text}"))
+    db.commit()
 
 
 async def _reply(db, creds, conversation: models.Conversation, text: str):

@@ -138,13 +138,16 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
                     continue
 
                 msg_type = msg.get("type")
-                image_media_id = None
+                image_media_id = audio_media_id = None
                 if msg_type == "text":
                     text = msg["text"]["body"]
                 elif msg_type == "image":
                     image_media_id = msg["image"].get("id")
                     caption = msg["image"].get("caption")
                     text = f"[photo] {caption}" if caption else "[photo]"
+                elif msg_type == "audio":
+                    audio_media_id = msg["audio"].get("id")
+                    text = "[voice note]"
                 elif msg_type == "button":
                     text = msg["button"].get("text", "")
                 else:
@@ -154,7 +157,8 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
                 # otherwise a slow cold-start response makes Meta assume delivery failed
                 # and resend the same message, which is what caused the duplicate-reply bug.
                 background_tasks.add_task(
-                    handle_incoming, business.id, from_number, text, profile_name, image_media_id, message_id
+                    handle_incoming, business.id, from_number, text, profile_name, image_media_id, message_id,
+                    audio_media_id,
                 )
 
     return {"status": "ok"}

@@ -3,6 +3,7 @@ name + address, and replies in the customer's own language - all in one call.
 
 AI_PROVIDER picks the model: "gemini" (default, Google's free tier, needs GEMINI_API_KEY) or
 "anthropic" (Claude, paid, needs ANTHROPIC_API_KEY). Switching is just an env var change."""
+import asyncio
 import base64
 import json
 import os
@@ -15,6 +16,10 @@ import models
 AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini").lower()
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5-5")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+# Free-tier Gemini often answers 503 "high demand" or 429 "rate limit" for a few seconds. Retry,
+# then try the lighter model, before giving up and handing the chat to the seller.
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-flash-lite-latest")
+GEMINI_RETRY_DELAYS = (2, 5)
 HISTORY_LIMIT = 20
 
 _clients: dict = {}  # created on first use, so a missing key for the unused provider doesn't matter
@@ -55,7 +60,9 @@ total and payment link itself - do not invent a payment link.
 - Set needs_human to true when the customer asks for a person, complains, asks about refunds, a damaged \
 or missing delivery, custom requests, bulk/wholesale pricing, or anything you can't answer from the \
 catalog. In that case, tell them the seller will reply shortly.
-- Customers may send a photo (e.g. a product picture or a handwritten list). If one is attached, read it and treat what it shows as part of their message. Voice notes can't be listened to yet - if the customer sent one, politely ask them to type their order instead.
+- Customers may send a photo (e.g. a product picture or a handwritten list). If one is attached, read it and treat what it shows as part of their message.
+- Customers may send a voice note instead of typing. If audio is attached, listen to it and treat what they said as their message, and set heard_text to exactly what they said, in their language and script. Otherwise leave heard_text null. If a message is just "[voice note]" and no audio is attached, politely ask them to type it instead.
+- Always also write spoken_reply: your reply as it would sound spoken aloud in a short WhatsApp voice note, in the customer's language - natural speech, no links, emojis, lists or symbols, under 40 words. When you set ready_to_place_order to true, spoken_reply should thank them, say their order is confirmed with the total amount, and that the payment details are in the chat.
 - If the customer asks about an earlier order (status, delivery, tracking, payment), answer from <customer_orders>. If an order is unpaid and has a payment link, you may share that link again. If you can't find the order they mean, or they report a problem with it, set needs_human to true. If they want to repeat an earlier order ("same as last time"), fill the cart from that order using products that are still in the catalog at today's prices, mention anything no longer available, and confirm the summary as usual - their saved name and address can be reused if they confirm them.
 - Follow <shop_policies>. If the shop is not accepting orders right now, don't take an order: \
 politely pass on the shop's message (in the customer's language) and still answer questions. Include the \
@@ -85,6 +92,8 @@ class AssistantTurn(BaseModel):
     needs_human: bool
     payment_method: Literal["online", "cod"] | None
     order_note: str | None
+    heard_text: str | None = None
+    spoken_reply: str | None = None
 
 
 class AssistantUnavailable(Exception):
@@ -123,6 +132,8 @@ def _orders_text(orders: list[models.Order]) -> str:
 
 # Image types both providers accept.
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+# Audio Gemini can listen to; WhatsApp voice notes arrive as "audio/ogg; codecs=opus".
+SUPPORTED_AUDIO_TYPES = {"audio/ogg", "audio/mpeg", "audio/mp3", "audio/wav", "audio/aac", "audio/flac", "audio/mp4"}
 
 
 async def run_turn(
@@ -132,8 +143,10 @@ async def run_turn(
     image: tuple[bytes, str] | None = None,
     recent_orders: list[models.Order] | None = None,
     policies: str = "",
+    audio: tuple[bytes, str] | None = None,
 ) -> AssistantTurn:
-    """`image` is an optional (bytes, mime_type) photo attached to the customer's latest message."""
+    """`image` / `audio` are an optional (bytes, mime_type) photo or voice note attached to the
+    customer's latest message. Only Gemini can listen to audio; Claude is told to ask for text."""
     state = {
         "cart": json.loads(conversation.cart_json or "[]"),
         "customer_name": conversation.customer_name,
@@ -150,9 +163,13 @@ async def run_turn(
     )
     if image and image[1] not in SUPPORTED_IMAGE_TYPES:
         image = None
+    if audio:
+        audio = (audio[0], audio[1].split(";")[0].strip())
+        if audio[1] not in SUPPORTED_AUDIO_TYPES:
+            audio = None
     if AI_PROVIDER == "anthropic":
         return await _run_claude(prompt, image)
-    return await _run_gemini(prompt, image)
+    return await _run_gemini(prompt, image, audio)
 
 
 async def _run_claude(prompt: str, image: tuple[bytes, str] | None) -> AssistantTurn:
@@ -178,23 +195,35 @@ async def _run_claude(prompt: str, image: tuple[bytes, str] | None) -> Assistant
     return response.parsed_output
 
 
-async def _run_gemini(prompt: str, image: tuple[bytes, str] | None) -> AssistantTurn:
+async def _run_gemini(prompt: str, image: tuple[bytes, str] | None, audio: tuple[bytes, str] | None = None) -> AssistantTurn:
     from google.genai import types
 
     contents: list = []
     if image:
         contents.append(types.Part.from_bytes(data=image[0], mime_type=image[1]))
+    if audio:
+        contents.append(types.Part.from_bytes(data=audio[0], mime_type=audio[1]))
     contents.append(prompt)
 
-    response = await _gemini_client().aio.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            response_mime_type="application/json",
-            response_schema=AssistantTurn,
-        ),
+    from google.genai import errors
+
+    config = types.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT,
+        response_mime_type="application/json",
+        response_schema=AssistantTurn,
     )
+    attempts = [GEMINI_MODEL] * (len(GEMINI_RETRY_DELAYS) + 1) + [GEMINI_FALLBACK_MODEL]
+    for i, model in enumerate(attempts):
+        try:
+            response = await _gemini_client().aio.models.generate_content(model=model, contents=contents, config=config)
+            break
+        except errors.APIError as e:
+            busy = e.code in (429, 500, 503, 504)
+            if not busy or i == len(attempts) - 1:
+                raise
+            print(f"GEMINI BUSY ({e.code}) on {model}, retrying")
+            if i < len(GEMINI_RETRY_DELAYS):
+                await asyncio.sleep(GEMINI_RETRY_DELAYS[i])
     if isinstance(response.parsed, AssistantTurn):
         return response.parsed
     if not response.text:

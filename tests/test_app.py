@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import ai
 import models
+import voice
 from database import SessionLocal
 
 _ids = itertools.count(1)
@@ -161,6 +162,49 @@ def test_photo_passed_to_ai(client, fake_ai):
     new_seller(client, wa_phone_number_id="PN_PHOTO", wa_token="t")
     whatsapp_message(client, "PN_PHOTO", "919000000005", {"type": "image", "image": {"id": "M1", "caption": "this"}})
     assert fake_ai.calls[-1]["image"] == (b"\xff\xd8fake-jpeg", "image/jpeg")
+
+
+def test_voice_note_heard_and_answered_by_voice(client, fake_ai, fake_whatsapp, fake_voice):
+    new_seller(client, wa_phone_number_id="PN_VOICE", wa_token="t")
+    fake_ai.queue = [fake_ai.turn(reply="Sure! How many?", heard_text="rendu chicken masala venum",
+                                  spoken_reply="Sure, how many packets?")]
+    whatsapp_message(client, "PN_VOICE", "919000000021", {"type": "audio", "audio": {"id": "AUDIO1", "voice": True}})
+    assert fake_ai.calls[-1]["audio"] == (b"OggSfake-voice", "audio/ogg; codecs=opus")
+    assert fake_whatsapp.sent[-2][2:] == ("text", "Sure! How many?")
+    assert fake_whatsapp.sent[-1][2:] == ("audio", "MEDIA_REPLY")
+    assert fake_voice == ["Sure, how many packets?"]
+    with SessionLocal() as db:
+        texts = [m.text for m in db.query(models.Message).order_by(models.Message.id.desc()).limit(3)]
+    assert "🎤 rendu chicken masala venum" in texts and "🔊 Sure, how many packets?" in texts
+
+
+def test_text_message_gets_no_voice_reply(client, fake_ai, fake_whatsapp, fake_voice):
+    new_seller(client, wa_phone_number_id="PN_TEXTONLY", wa_token="t")
+    fake_ai.queue = [fake_ai.turn(reply="Hi!", spoken_reply="Hi there!")]
+    whatsapp_message(client, "PN_TEXTONLY", "919000000022", text("hello"))
+    assert fake_whatsapp.sent[-1][2] == "text" and fake_voice == []
+
+
+def test_order_confirmed_by_voice(client, fake_ai, fake_whatsapp, fake_voice):
+    _, h = new_seller(client, wa_phone_number_id="PN_VOICEORDER", wa_token="t")
+    product = add_product(client, h, "Pepper", price=90, stock=5)
+    fake_ai.queue = [fake_ai.turn(cart=[ai.CartItem(product_id=product["id"], quantity=1)], customer_name="Ravi",
+                                  delivery_address="12 Gandhi St, Chennai 600001", ready_to_place_order=True,
+                                  reply="Thank you!", spoken_reply="Thank you Ravi, your order of 90 rupees is confirmed.")]
+    whatsapp_message(client, "PN_VOICEORDER", "919000000023", text("yes confirm"))
+    assert "Order #" in fake_whatsapp.sent[-2][3]
+    assert fake_whatsapp.sent[-1][2] == "audio"
+    assert fake_voice == ["Thank you Ravi, your order of 90 rupees is confirmed."]
+
+
+def test_voice_failure_still_sends_text(client, fake_ai, fake_whatsapp, fake_voice, monkeypatch):
+    async def broken(text):
+        raise RuntimeError("tts down")
+    monkeypatch.setattr(voice, "synthesize", broken)
+    new_seller(client, wa_phone_number_id="PN_VOICEFAIL", wa_token="t")
+    fake_ai.queue = [fake_ai.turn(reply="Got it", spoken_reply="Got it")]
+    whatsapp_message(client, "PN_VOICEFAIL", "919000000024", {"type": "audio", "audio": {"id": "AUDIO2"}})
+    assert fake_whatsapp.sent[-1][2:] == ("text", "Got it")
 
 
 def test_checkout_creates_order(client, fake_ai, fake_whatsapp):

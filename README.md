@@ -18,6 +18,9 @@ FastAPI service behind the WhatsApp ordering bot and the seller dashboard.
 | `AI_PROVIDER` | No | `gemini` (default, free tier) or `anthropic` (Claude, paid). |
 | `GEMINI_API_KEY` | If gemini | Free key from aistudio.google.com. Without the active provider's key every chat is handed to the seller. |
 | `GEMINI_MODEL` | No | Defaults to `gemini-flash-latest`. |
+| `GEMINI_FALLBACK_MODEL` | No | Tried when the main model is busy (503/429). Defaults to `gemini-flash-lite-latest`. |
+| `VOICE_REPLIES` | No | `on` (default) or `off`. Voice notes in, voice replies out, spoken order confirmations. Needs `GEMINI_API_KEY`. |
+| `TTS_MODEL` / `TTS_VOICE` | No | Speech model and voice. Defaults `gemini-3.8-flash-lite-tts` / `Kore`. |
 | `ANTHROPIC_API_KEY` | If anthropic | Claude API key (console.anthropic.com). |
 | `CLAUDE_MODEL` | No | Defaults to `claude-opus-5-5`; `claude-haiku-5-5` is far cheaper. |
 | `SECRET_KEY` | Yes | Long random string. Encrypts sellers' WhatsApp/Razorpay secrets and signs logins and invoice links. **Never change it** once sellers have connected accounts - their saved keys become unreadable. |
