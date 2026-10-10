@@ -30,14 +30,16 @@ import whatsapp  # noqa: E402
 
 class FakeWhatsApp:
     def __init__(self):
-        self.sent = []  # (phone_number_id, to, type, text or template name)
+        self.sent = []  # (phone_number_id, to, type, text / template name / audio id / interactive type)
+        self.payloads = []
         self.fail = False
 
     async def post(self, creds, payload):
         if creds is None or self.fail:
             raise whatsapp.WhatsAppSendError("fake failure")
         body = (payload.get("text", {}).get("body") or payload.get("template", {}).get("name")
-                or payload.get("audio", {}).get("id"))
+                or payload.get("audio", {}).get("id") or payload.get("interactive", {}).get("type"))
+        self.payloads.append(payload)
         self.sent.append((creds.phone_number_id, payload["to"], payload["type"], body))
 
     async def download(self, creds, media_id):

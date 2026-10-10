@@ -547,3 +547,109 @@ def test_shop_settings_round_trip(client):
     assert out["delivery_fee"] == 25 and out["free_delivery_above"] is None and out["min_order_amount"] == 200
     assert out["cod_enabled"] and not out["accepting_orders"] and out["closed_message"] == "Back soon"
     assert out["catalog_path"].startswith("/shop/")
+
+
+# ---- payment methods: UPI page, WhatsApp Pay ----------------------------------------------
+
+def test_payment_settings_validation(client):
+    _, h = new_seller(client)
+    assert client.patch("/business", json={"upi_id": "not a upi"}, headers=h).status_code == 400
+    assert client.patch("/business", json={"payment_method": "upi"}, headers=h).status_code == 400  # no UPI ID yet
+    assert client.patch("/business", json={"payment_method": "bitcoin"}, headers=h).status_code == 400
+    r = client.patch("/business", json={"upi_id": "shop@okaxis", "payment_method": "upi"}, headers=h)
+    assert r.status_code == 200 and r.json()["active_payment_method"] == "upi"
+
+
+def test_upi_checkout_sends_pay_button_and_page(client, fake_ai, fake_whatsapp):
+    _, h = new_seller(client, wa_phone_number_id="PN_UPI", wa_token="t", upi_id="masala@okaxis",
+                      upi_name="Siddharth Masala", payment_method="upi")
+    product = add_product(client, h, "Pepper", price=90, stock=5)
+    order_id = place_whatsapp_order(client, fake_ai, "PN_UPI", "919000000031", product["id"], qty=2)
+
+    assert "Tap the Pay button" in fake_whatsapp.sent[-2][3]
+    assert fake_whatsapp.sent[-1][2:] == ("interactive", "cta_url")
+    button = fake_whatsapp.payloads[-1]["interactive"]
+    assert button["action"]["parameters"]["display_text"] == "Pay ₹180"
+    assert button["header"]["image"]["link"].endswith("/static/pay/upi-banner.png")
+
+    pay_path = button["action"]["parameters"]["url"].split(".com", 1)[1]
+    page = client.get(pay_path)
+    assert page.status_code == 200
+    assert "tez://upi/pay?pa=masala%40okaxis&amp;pn=Siddharth%20Masala&amp;am=180.00" in page.text
+    assert "phonepe://pay?" in page.text and "paytmmp://pay?" in page.text and "<svg" in page.text
+    assert client.get(f"/pay/{order_id}?t=guess").status_code == 404
+
+    # Seller confirms by hand; the page then says paid.
+    assert client.patch(f"/orders/{order_id}/payment", json={"is_paid": True}, headers=h).status_code == 200
+    assert "Paid" in client.get(pay_path).text
+
+
+def test_banner_is_served(client):
+    r = client.get("/static/pay/upi-banner.png")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+
+
+def _wapay_status(reference_id, status="captured"):
+    return {"type": "payment", "status": status, "payment": {"reference_id": reference_id}}
+
+
+def test_whatsapp_pay_order_card_and_verified_confirmation(client, fake_ai, fake_whatsapp, monkeypatch):
+    import routers.pay as pay
+    business_id, h = new_seller(client, wa_phone_number_id="PN_WAPAY", wa_token="t", wa_payment_config="rira-rzp",
+                                payment_method="whatsapp_pay")
+    product = add_product(client, h, "Pepper", price=90, stock=5)
+    order_id = place_whatsapp_order(client, fake_ai, "PN_WAPAY", "919000000032", product["id"], qty=2)
+
+    card = fake_whatsapp.payloads[-1]["interactive"]
+    assert card["type"] == "order_details"
+    params = card["action"]["parameters"]
+    reference = f"RIRA{business_id}-{order_id}"
+    assert params["reference_id"] == reference and params["total_amount"] == {"value": 18000, "offset": 100}
+    assert params["payment_settings"][0]["payment_gateway"]["configuration_name"] == "rira-rzp"
+    assert params["order"]["items"][0] == {"retailer_id": str(product["id"]), "name": "Pepper",
+                                           "amount": {"value": 9000, "offset": 100}, "quantity": 2}
+
+    # A forged "captured" webhook is ignored when Meta's lookup says it isn't paid.
+    async def lookup_pending(creds, config, ref):
+        return {"reference_id": ref, "status": "pending"}
+    monkeypatch.setattr(pay, "lookup_payment", lookup_pending)
+    client.post("/webhook", json={"entry": [{"changes": [{"value": {
+        "metadata": {"phone_number_id": "PN_WAPAY"}, "statuses": [_wapay_status(reference)]}}]}]})
+    assert not [o for o in client.get("/orders", headers=h).json() if o["id"] == order_id][0]["is_paid"]
+
+    async def lookup_captured(creds, config, ref):
+        return {"reference_id": ref, "status": "captured", "amount": {"value": 18000, "offset": 100},
+                "transactions": [{"status": "success", "pg_transaction_id": "pay_wa_1"}]}
+    monkeypatch.setattr(pay, "lookup_payment", lookup_captured)
+    client.post("/webhook", json={"entry": [{"changes": [{"value": {
+        "metadata": {"phone_number_id": "PN_WAPAY"}, "statuses": [_wapay_status(reference)]}}]}]})
+    order = [o for o in client.get("/orders", headers=h).json() if o["id"] == order_id][0]
+    assert order["is_paid"] and order["status"] == "Confirmed"
+    assert "Payment received" in fake_whatsapp.sent[-1][3]
+
+
+def test_whatsapp_pay_amount_mismatch_not_marked_paid(client, fake_ai, fake_whatsapp, monkeypatch):
+    import routers.pay as pay
+    business_id, h = new_seller(client, wa_phone_number_id="PN_WAPAY2", wa_token="t", wa_payment_config="cfg",
+                                payment_method="whatsapp_pay")
+    product = add_product(client, h, "Pepper", price=90, stock=5)
+    order_id = place_whatsapp_order(client, fake_ai, "PN_WAPAY2", "919000000033", product["id"], qty=1)
+
+    async def lookup_short(creds, config, ref):
+        return {"status": "captured", "amount": {"value": 100, "offset": 100}, "transactions": []}
+    monkeypatch.setattr(pay, "lookup_payment", lookup_short)
+    client.post("/webhook", json={"entry": [{"changes": [{"value": {
+        "metadata": {"phone_number_id": "PN_WAPAY2"}, "statuses": [_wapay_status(f"RIRA{business_id}-{order_id}")]}}]}]})
+    assert not [o for o in client.get("/orders", headers=h).json() if o["id"] == order_id][0]["is_paid"]
+
+
+def test_failed_pay_button_falls_back_to_link(client, fake_ai, fake_whatsapp, monkeypatch):
+    import routers.pay as pay
+    _, h = new_seller(client, wa_phone_number_id="PN_UPI2", wa_token="t", upi_id="x@ybl", payment_method="upi")
+    product = add_product(client, h, "Pepper", price=90, stock=5)
+
+    async def broken(creds, to, interactive):
+        raise pay.WhatsAppSendError("interactive not allowed")
+    monkeypatch.setattr(pay, "send_interactive", broken)
+    order_id = place_whatsapp_order(client, fake_ai, "PN_UPI2", "919000000034", product["id"], qty=1)
+    assert fake_whatsapp.sent[-1][3].startswith("Pay here: https://") and f"/pay/{order_id}?t=" in fake_whatsapp.sent[-1][3]

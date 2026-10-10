@@ -4,7 +4,10 @@ from sqlalchemy.orm import Session
 
 import models
 from auth import current_business, email_taken, hash_password, owner_business, verify_password
+import re
+
 from business import razorpay_creds, whatsapp_creds
+from routers.pay import PAYMENT_METHODS, effective_payment_method, method_ready
 from database import get_db
 from secrets_box import encrypt
 
@@ -32,6 +35,11 @@ class BusinessOut(BaseModel):
     razorpay_connected: bool
     razorpay_webhook_ready: bool
     razorpay_webhook_url_path: str
+    payment_method: str | None  # what the seller picked
+    active_payment_method: str | None  # what customers actually get right now
+    upi_id: str | None
+    upi_name: str | None
+    wa_payment_config: str | None
 
 
 class BusinessUpdate(BaseModel):
@@ -50,6 +58,14 @@ class BusinessUpdate(BaseModel):
     delivery_fee: float | None = None
     free_delivery_above: float | None = None
     min_order_amount: float | None = None
+    payment_method: str | None = None
+    upi_id: str | None = None
+    upi_name: str | None = None
+    wa_payment_config: str | None = None
+
+
+# name@bank - letters, digits, dot, dash, underscore before the @, letters after it.
+UPI_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,256}@[A-Za-z][A-Za-z0-9.-]{1,63}$")
 
 
 class PasswordChange(BaseModel):
@@ -79,6 +95,11 @@ def _out(business: models.Business) -> dict:
         "razorpay_connected": bool(rp.key_id and rp.key_secret),
         "razorpay_webhook_ready": bool(rp.webhook_secret),
         "razorpay_webhook_url_path": f"/payments/webhook/razorpay/{business.id}",
+        "payment_method": business.payment_method,
+        "active_payment_method": effective_payment_method(business),
+        "upi_id": business.upi_id,
+        "upi_name": business.upi_name,
+        "wa_payment_config": business.wa_payment_config,
     }
 
 
@@ -130,6 +151,24 @@ def update_business(
         value = (data.get(field) or "").strip()
         if value:
             setattr(business, column, encrypt(value))
+
+    for field in ("upi_name", "wa_payment_config"):
+        if field in data:
+            setattr(business, field, (data[field] or "").strip() or None)
+    if "upi_id" in data:
+        upi_id = (data["upi_id"] or "").strip() or None
+        if upi_id and not UPI_ID_RE.match(upi_id):
+            raise HTTPException(status_code=400, detail="That doesn't look like a UPI ID (it should look like name@bank)")
+        business.upi_id = upi_id
+    if "payment_method" in data:
+        method = data["payment_method"] or None
+        if method and method not in PAYMENT_METHODS:
+            raise HTTPException(status_code=400, detail="Unknown payment method")
+        if method and not method_ready(business, method):
+            missing = {"upi": "your UPI ID", "razorpay_link": "your Razorpay keys",
+                       "whatsapp_pay": "the WhatsApp payment configuration name"}[method]
+            raise HTTPException(status_code=400, detail=f"Add {missing} before choosing this payment method")
+        business.payment_method = method
 
     db.commit()
     db.refresh(business)

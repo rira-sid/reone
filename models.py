@@ -28,6 +28,14 @@ class Business(Base):
     razorpay_key_secret_enc = Column(Text, nullable=True)
     razorpay_webhook_secret_enc = Column(Text, nullable=True)
 
+    # How online payments are collected (see routers/pay.py): "upi" = seller's own UPI ID, seller
+    # confirms by hand; "razorpay_link" = Razorpay link, auto-confirmed; "whatsapp_pay" = WhatsApp's
+    # native "Review and pay" through Razorpay, auto-confirmed. Unset = best available.
+    payment_method = Column(String, nullable=True)
+    upi_id = Column(String, nullable=True)
+    upi_name = Column(String, nullable=True)
+    wa_payment_config = Column(String, nullable=True)  # payment configuration name in WhatsApp Manager
+
     # Ordering rules
     accepting_orders = Column(Boolean, default=True, nullable=False)
     closed_message = Column(Text, nullable=True)

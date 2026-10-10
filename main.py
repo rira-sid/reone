@@ -10,6 +10,7 @@ load_dotenv()
 
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from database import Base, engine, SessionLocal
 from business import DEFAULT_BUSINESS_ID, business_for_phone_number_id
@@ -18,7 +19,8 @@ import auth
 from chatbot import handle_incoming
 from migrate import add_missing_columns
 from reminders import reminder_loop
-from routers import products, orders, payments, conversations, settings, invoices, insights, shop
+from routers import products, orders, payments, conversations, settings, invoices, insights, shop, pay
+from routers.pay import handle_payment_status
 
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
 
@@ -58,6 +60,9 @@ app.include_router(settings.router)
 app.include_router(invoices.router)
 app.include_router(insights.router)
 app.include_router(shop.router)
+app.include_router(pay.router)
+# Payment app logos and the UPI banner WhatsApp loads as a message header image.
+app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
 
 @app.get("/health")
@@ -114,11 +119,16 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
     for entry in body.get("entry", []):
         for change in entry.get("changes", []):
             value = change.get("value", {})
+            phone_number_id = value.get("metadata", {}).get("phone_number_id")
+            # WhatsApp Pay results arrive as "payment" statuses (verified with Meta before use).
+            for status in value.get("statuses") or []:
+                if status.get("type") == "payment":
+                    background_tasks.add_task(handle_payment_status, phone_number_id, status)
+
             messages = value.get("messages")
             if not messages:
                 continue  # delivery/read status updates etc.
 
-            phone_number_id = value.get("metadata", {}).get("phone_number_id")
             with SessionLocal() as db:
                 business = business_for_phone_number_id(db, phone_number_id)
             if not business:

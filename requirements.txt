@@ -9,3 +9,4 @@ razorpay
 cryptography
 psycopg2-binary
 lameenc
+qrcode

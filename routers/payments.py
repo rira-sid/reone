@@ -120,8 +120,13 @@ async def razorpay_webhook(business_id: int, request: Request, db: Session = Dep
 
     mark_order_paid(db, order, payment_entity["id"])
     db.commit()
+    await notify_payment_received(business, order)
+    return {"status": "ok"}
 
-    # The customer just paid via a link from the chat, so we're inside WhatsApp's 24h window.
+
+async def notify_payment_received(business: models.Business, order: models.Order):
+    """Thank the customer once a payment is confirmed automatically (Razorpay link or WhatsApp Pay).
+    They just paid from a link/card in the chat, so we're inside WhatsApp's 24h window."""
     try:
         await send_message(
             whatsapp_creds(business),
@@ -132,4 +137,3 @@ async def razorpay_webhook(business_id: int, request: Request, db: Session = Dep
     except WhatsAppSendError as e:
         # Payment is already recorded - a failed confirmation message shouldn't fail the webhook.
         print("PAYMENT CONFIRMATION NOT DELIVERED:", e)
-    return {"status": "ok"}

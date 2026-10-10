@@ -51,6 +51,12 @@ async def send_template(creds: WhatsAppCreds | None, to: str, name: str, languag
     })
 
 
+async def send_interactive(creds: WhatsAppCreds | None, to: str, interactive: dict):
+    """Send an interactive message (button, order details...). Only within the 24h window."""
+    await _post_message(creds, {"messaging_product": "whatsapp", "recipient_type": "individual", "to": to,
+                                "type": "interactive", "interactive": interactive})
+
+
 async def send_audio(creds: WhatsAppCreds | None, to: str, data: bytes, mime_type: str = "audio/mpeg"):
     """Upload an audio file to WhatsApp and send it to the customer as a playable audio message."""
     media_id = await upload_media(creds, data, mime_type, "reply.mp3")
@@ -75,6 +81,24 @@ async def upload_media(creds: WhatsAppCreds | None, data: bytes, mime_type: str,
     if resp.status_code >= 400:
         raise WhatsAppSendError(f"WhatsApp rejected the upload: {_error_detail(resp)}")
     return resp.json()["id"]
+
+
+async def lookup_payment(creds: WhatsAppCreds | None, configuration: str, reference_id: str) -> dict | None:
+    """Ask Meta for the real state of a WhatsApp Pay order (never trust a webhook alone).
+    Returns the payment object, or None if Meta has no record of it."""
+    if creds is None:
+        raise WhatsAppSendError("WhatsApp is not connected for this business")
+    headers = {"Authorization": f"Bearer {creds.token}"}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{GRAPH_BASE}/{creds.phone_number_id}/payments/{configuration}/{reference_id}",
+                                    headers=headers)
+    except httpx.HTTPError as e:
+        raise WhatsAppSendError(f"Could not reach WhatsApp: {e!r}") from e
+    if resp.status_code >= 400:
+        raise WhatsAppSendError(f"Payment lookup failed: {_error_detail(resp)}")
+    payments = resp.json().get("payments") or []
+    return payments[0] if payments else None
 
 
 async def download_media(creds: WhatsAppCreds | None, media_id: str) -> tuple[bytes, str]:

@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from routers.invoices import PUBLIC_BASE_URL
 from routers.orders import place_order
+from routers.pay import checkout_instruction, send_payment_request
 from routers.payments import ensure_payment_link
 from whatsapp import WhatsAppSendError, download_media, send_audio, send_message
 
@@ -75,8 +76,9 @@ def shop_policies(business: models.Business) -> str:
 
 
 def _checkout(db, business: models.Business, conversation: models.Conversation, cart: list[ai.CartItem],
-              payment_method: str, note: str | None) -> str:
-    """Create the order and return the text to append to the AI's thank-you reply."""
+              payment_method: str, note: str | None) -> tuple[str, models.Order | None]:
+    """Create the order. Returns the text to append to the AI's thank-you reply, and the order
+    if a separate payment message (UPI button / WhatsApp Pay card) should follow it."""
     customer = _get_or_create_customer(db, conversation)
     items = [schemas.OrderItemCreate(product_id=i.product_id, quantity=i.quantity) for i in cart if i.quantity > 0]
     order = place_order(db, business, customer, items, payment_method, note)
@@ -88,15 +90,20 @@ def _checkout(db, business: models.Business, conversation: models.Conversation, 
     if order.delivery_fee:
         summary += f" (incl. ₹{order.delivery_fee:g} delivery)"
     if order.payment_method == "cod":
-        return f"{summary}\nPlease pay ₹{order.total_amount:g} in cash on delivery."
+        return f"{summary}\nPlease pay ₹{order.total_amount:g} in cash on delivery.", None
+    # UPI button / WhatsApp Pay card: a separate interactive message follows the summary.
+    instruction = checkout_instruction(business, order)
+    if instruction:
+        db.commit()
+        return f"{summary}\n{instruction}", order
     try:
         link = ensure_payment_link(db, business, order)
     except Exception as e:
-        # Razorpay not connected yet, or the link call failed - the order is still saved
+        # No payment method set up yet, or the Razorpay call failed - the order is still saved
         # on the dashboard, and the seller can share payment details by hand.
         print("PAYMENT LINK ERROR:", repr(e))
-        return f"{summary}\nThe seller will send you the payment details shortly."
-    return f"{summary}\nPay here: {link}"
+        return f"{summary}\nThe seller will send you the payment details shortly.", None
+    return f"{summary}\nPay here: {link}", None
 
 
 async def handle_incoming(
@@ -172,6 +179,7 @@ async def handle_incoming(
         reply = turn.reply
         spoken = turn.spoken_reply  # only kept when the AI's own reply goes out unchanged
         order_placed = False
+        pay_order = None
         if turn.needs_human:
             conversation.ai_paused = True
         elif turn.ready_to_place_order and turn.cart and conversation.customer_name and conversation.delivery_address:
@@ -189,7 +197,9 @@ async def handle_incoming(
                 spoken = None
             else:
                 try:
-                    reply = f"{reply}\n\n{_checkout(db, business, conversation, turn.cart, payment_method, turn.order_note)}"
+                    checkout_text, pay_order = _checkout(db, business, conversation, turn.cart, payment_method,
+                                                         turn.order_note)
+                    reply = f"{reply}\n\n{checkout_text}"
                     order_placed = True
                 except HTTPException as e:
                     # Broke a shop rule the AI missed (e.g. minimum order) - say so, keep the cart.
@@ -198,6 +208,8 @@ async def handle_incoming(
                     spoken = None
 
         await _reply(db, creds, conversation, reply)
+        if pay_order:
+            await send_payment_request(business, pay_order, conversation.phone)
         # Answer a voice note with a voice note, and always confirm a new order out loud.
         if spoken and (audio or order_placed):
             await _send_voice(db, creds, conversation, spoken)
