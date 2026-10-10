@@ -60,6 +60,12 @@ app.include_router(insights.router)
 app.include_router(shop.router)
 
 
+@app.get("/health")
+def health():
+    """Uptime check, pinged by .github/workflows/keep-awake.yml so the free Render instance doesn't sleep."""
+    return {"ok": True}
+
+
 @app.get("/webhook")
 def verify_webhook(request: Request):
     mode = request.query_params.get("hub.mode")

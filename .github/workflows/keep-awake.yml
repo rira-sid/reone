@@ -1,0 +1,16 @@
+# Render's free plan sleeps after 15 idle minutes, making the first WhatsApp reply take ~50s.
+# Ping the backend every 10 minutes so it stays awake. GitHub may delay scheduled runs a few
+# minutes under load, and pauses schedules after 60 days with no commits to the repo.
+name: Keep backend awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health
+        run: curl -fsS --max-time 90 --retry 2 https://reone-backend.onrender.com/health
