@@ -41,7 +41,8 @@ async def notify_order_update(db, business: models.Business, order: models.Order
         else:
             await send_template(
                 creds, customer.phone, ORDER_UPDATE_TEMPLATE, ORDER_UPDATE_TEMPLATE_LANG,
-                [customer.name or "there", str(order.id), update],
+                # The template adds its own ". Thank you..." after this value; Meta rejects newlines in params.
+                [customer.name or "there", str(order.id), " ".join(update.split()).rstrip(". ")],
             )
     except WhatsAppSendError as e:
         # The order change itself is saved; the seller can see in the inbox that no update went out.
