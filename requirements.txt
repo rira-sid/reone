@@ -7,3 +7,4 @@ google-genai
 sqlalchemy
 razorpay
 cryptography
+psycopg2-binary
