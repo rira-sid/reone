@@ -1,22 +1,28 @@
 """How customers pay for online orders. Each seller picks one method in Settings:
 
-- "upi":           Free. WhatsApp gets a UPI-apps banner with a "Pay ₹X" button that opens our pay
-                   page: Google Pay / PhonePe / Paytm / BHIM buttons (each opens that app with the
-                   seller's UPI ID and amount filled in) plus a QR code. Money goes straight to the
-                   seller; UPI tells nobody it arrived, so the seller taps "Mark paid".
-- "razorpay_link": Razorpay payment link (UPI, cards...), confirmed automatically (routers/payments.py).
+- "razorpay_link": Recommended. WhatsApp gets a UPI-apps banner with a "Pay ₹X" button opening our
+                   pay page. Each logo (Google Pay / PhonePe / Paytm / BHIM) starts a Razorpay UPI
+                   Intent payment for a Razorpay order, so the app opens with the amount filled in and
+                   locked - the customer just enters their PIN. Confirmed automatically: Razorpay's
+                   signature on the page, and the order.paid webhook as a backup. "More options"
+                   falls back to a Razorpay payment link (cards, netbanking, QR).
 - "whatsapp_pay":  WhatsApp's native "Review and pay" order card, paid inside WhatsApp through the
                    seller's Razorpay account linked in WhatsApp Manager. Confirmed automatically from
                    Meta's payment webhook, double-checked with Meta's payment lookup.
+- "upi":           Manual, opt-in only. Same pay page, but the logos open the apps with the seller's
+                   own UPI ID. Nobody tells us the money arrived, so the seller taps "Mark paid".
 """
 import hmac
+import json
 from html import escape
 from urllib.parse import quote, urlencode
 
 import qrcode
 import qrcode.image.svg
+import razorpay
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
 import models
@@ -47,12 +53,12 @@ def method_ready(business: models.Business, method: str) -> bool:
 
 
 def effective_payment_method(business: models.Business) -> str | None:
-    """The seller's chosen method if it's set up, else the best one that is, else None."""
+    """The seller's chosen method if it's set up, else Razorpay if connected, else None. Manual
+    UPI is never picked automatically - only when the seller chooses it."""
     if business.payment_method and method_ready(business, business.payment_method):
         return business.payment_method
-    for method in ("razorpay_link", "upi"):
-        if method_ready(business, method):
-            return method
+    if method_ready(business, "razorpay_link"):
+        return "razorpay_link"
     return None
 
 
@@ -108,6 +114,8 @@ def _page(title: str, body: str) -> HTMLResponse:
        justify-content:space-between;align-items:center;margin-top:12px}}
  button{{border:0;background:#2563eb;color:#fff;border-radius:8px;padding:6px 12px;font-size:13px}}
  .note{{font-size:13px;color:#4b5563;margin-top:20px;line-height:1.5}} .paid{{font-size:22px;color:#059669}}
+ button.app{{font:inherit;cursor:pointer}} .status{{background:#eff6ff;color:#1e40af;border-radius:10px;padding:12px;font-size:14px}}
+ .more{{display:block;text-align:center;margin-top:14px;font-size:14px;color:#2563eb}}
 </style></head><body><div class="card">{body}</div></body></html>""")
 
 
@@ -131,11 +139,16 @@ def pay_page(order_id: int, t: str = "", db: Session = Depends(get_db)):
         return _page(f"Paid - {b.name}", f"{head}<p class='paid'>✅ Paid - thank you!</p>")
     if order.status == "Cancelled":
         return _page(b.name, f"{head}<p>This order was cancelled.</p>")
+    items = ", ".join(f"{i.quantity} × {escape(i.product.name)}" for i in order.items)
+    if effective_payment_method(b) in ("razorpay_link", "whatsapp_pay") and method_ready(b, "razorpay_link"):
+        try:
+            return _razorpay_page(db, b, order, head, items)
+        except Exception as e:  # Razorpay down or keys wrong - fall through to UPI/manual below
+            print(f"RAZORPAY ORDER FAILED (order {order.id}):", repr(e))
     if not b.upi_id:
         return _page(b.name, f"{head}<p>The seller will send you payment details on WhatsApp.</p>")
 
     query = upi_query(b, order)
-    items = ", ".join(f"{i.quantity} × {escape(i.product.name)}" for i in order.items)
     buttons = "".join(
         f"<a class='app' href='{escape(prefix + query)}'><img src='/static/pay/{logo}' alt=''>{escape(label)}</a>"
         for label, logo, prefix in UPI_APPS
@@ -151,13 +164,127 @@ you'll get a message on WhatsApp. If anything goes wrong, just reply in the chat
     return _page(f"Pay {b.name}", body)
 
 
+# Razorpay's UPI Intent app codes for the same four logos (works on Android and iOS).
+RAZORPAY_APPS = (("Google Pay", "gpay.png", "gpay"), ("PhonePe", "phonepe.png", "phonepe"),
+                 ("Paytm", "paytm.png", "paytm"), ("BHIM", "bhim.png", "bhim"))
+
+
+def _razorpay_client(business: models.Business) -> razorpay.Client:
+    creds = razorpay_creds(business)
+    return razorpay.Client(auth=(creds.key_id, creds.key_secret))
+
+
+def ensure_razorpay_order(db: Session, business: models.Business, order: models.Order) -> str:
+    """Razorpay order for the exact total - it fixes the amount the UPI app shows. Created once."""
+    if not order.razorpay_order_id:
+        rp_order = _razorpay_client(business).order.create({
+            "amount": round(order.total_amount * 100),
+            "currency": "INR",
+            "receipt": f"order-{order.id}",
+            "notes": {"order_id": str(order.id), "business_id": str(business.id)},
+        })
+        order.razorpay_order_id = rp_order["id"]
+        db.commit()
+    return order.razorpay_order_id
+
+
+def _razorpay_page(db: Session, b: models.Business, order: models.Order, head: str, items: str) -> HTMLResponse:
+    from routers.payments import ensure_payment_link
+
+    rp_order_id = ensure_razorpay_order(db, b, order)
+    try:
+        more_options = ensure_payment_link(db, b, order)  # cards, netbanking, QR on a laptop
+    except Exception as e:
+        print(f"PAYMENT LINK FAILED (order {order.id}):", repr(e))
+        more_options = None
+    buttons = "".join(
+        f"<button class='app' data-app='{code}' data-label='{escape(label)}'><img src='/static/pay/{logo}' alt=''>"
+        f"{escape(label)}</button>"
+        for label, logo, code in RAZORPAY_APPS
+    )
+    payment = {
+        "amount": round(order.total_amount * 100),
+        "currency": "INR",
+        "method": "upi",
+        "contact": f"+{order.customer.phone}" if order.customer.phone.isdigit() else order.customer.phone,
+        "email": "void@razorpay.com",  # Razorpay requires one; customers order by phone only
+        "order_id": rp_order_id,
+    }
+    config = {"key": razorpay_creds(b).key_id, "payment": payment,
+              "confirmUrl": f"/pay/{order.id}/confirm?t={sign_value(f'pay:{order.id}')}"}
+    more = (f"<a class='more' href='{escape(more_options)}'>More options: card, netbanking, QR code</a>"
+            if more_options else "")
+    body = f"""{head}
+<div class="amount">₹{order.total_amount:,.2f}</div><div class="muted">{items}</div>
+<p class="muted">Tap your UPI app - the amount is already filled in, just enter your PIN.</p>
+<div class="apps">{buttons}</div>
+<div id="status" class="status" hidden></div>
+{more}
+<p class="note">🔒 Secure payment by Razorpay. Your order is confirmed automatically as soon as you pay.</p>
+<script src="https://checkout.razorpay.com/v1/razorpay.js"></script>
+<script>
+const cfg = {json.dumps(config)};
+const statusBox = document.getElementById("status");
+function show(text) {{ statusBox.hidden = false; statusBox.textContent = text; }}
+const rzp = new Razorpay({{ key: cfg.key }});
+rzp.on("payment.success", async (r) => {{
+  show("Payment done - confirming your order…");
+  try {{
+    const res = await fetch(cfg.confirmUrl, {{ method: "POST", headers: {{ "Content-Type": "application/json" }}, body: JSON.stringify(r) }});
+    if (res.ok) {{ location.reload(); return; }}
+  }} catch (e) {{}}
+  show("Payment received. Your order will be confirmed on WhatsApp in a moment.");
+}});
+rzp.on("payment.error", (e) => {{
+  const d = (e && (e.description || (e.error && e.error.description))) || "Payment didn't go through.";
+  show(d + " Please try again or choose another app.");
+}});
+document.querySelectorAll("[data-app]").forEach((btn) => btn.addEventListener("click", () => {{
+  show("Opening " + btn.dataset.label + "…");
+  rzp.createPayment(cfg.payment, {{ app: btn.dataset.app }});
+}}));
+</script>"""
+    return _page(f"Pay {b.name}", body)
+
+
+class RazorpayResult(BaseModel):
+    razorpay_payment_id: str
+    razorpay_order_id: str
+    razorpay_signature: str
+
+
+@router.post("/{order_id}/confirm")
+async def confirm_razorpay_payment(order_id: int, payload: RazorpayResult, t: str = "", db: Session = Depends(get_db)):
+    """The pay page reports a successful Razorpay payment. Trust it only if Razorpay's signature
+    (made with the seller's key secret) checks out for this order's Razorpay order."""
+    from routers.payments import notify_payment_received
+
+    if not hmac.compare_digest(t, sign_value(f"pay:{order_id}")):
+        raise HTTPException(status_code=404, detail="Not found")
+    order = (
+        db.query(models.Order).options(joinedload(models.Order.business))
+        .filter(models.Order.id == order_id).with_for_update().first()
+    )
+    if not order or not order.razorpay_order_id or payload.razorpay_order_id != order.razorpay_order_id:
+        raise HTTPException(status_code=400, detail="Payment doesn't match this order")
+    try:
+        _razorpay_client(order.business).utility.verify_payment_signature(payload.model_dump())
+    except razorpay.errors.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid payment signature")
+    if not order.is_paid:  # the webhook may have got here first
+        mark_order_paid(db, order, payload.razorpay_payment_id)
+        db.commit()
+        await notify_payment_received(order.business, order)
+    return {"paid": True}
+
+
 # ---- sending the payment request in WhatsApp ----------------------------------------------
 
 def checkout_instruction(business: models.Business, order: models.Order) -> str | None:
     """Line appended to the order summary, for methods that send their own pay message. Also
     records the pay page as the order's link, so reminders and the AI can resend it."""
     method = effective_payment_method(business)
-    if method == "upi":
+    if method in ("upi", "razorpay_link"):
         order.payment_link_url = pay_url(order.id)
         return "Tap the Pay button below to pay with Google Pay, PhonePe, Paytm or any UPI app."
     if method == "whatsapp_pay":
@@ -213,12 +340,13 @@ def order_details_message(business: models.Business, order: models.Order) -> dic
 
 
 def upi_button_message(business: models.Business, order: models.Order) -> dict:
+    manual = effective_payment_method(business) == "upi"
     return {
         "type": "cta_url",
         "header": {"type": "image", "image": {"link": BANNER_URL}},
         "body": {"text": f"Order #{order.id} · Total ₹{order.total_amount:g}\n"
                          f"Pay {business.upi_name or business.name} with Google Pay, PhonePe, Paytm, BHIM or any UPI app."},
-        "footer": {"text": "Money goes directly to the seller"},
+        "footer": {"text": "Money goes directly to the seller" if manual else "Secure payment by Razorpay"},
         "action": {"name": "cta_url",
                    "parameters": {"display_text": f"Pay ₹{order.total_amount:g}"[:20], "url": pay_url(order.id)}},
     }
@@ -229,7 +357,7 @@ async def send_payment_request(business: models.Business, order: models.Order, t
     link so the customer can always pay."""
     method = effective_payment_method(business)
     creds = whatsapp_creds(business)
-    if method == "upi":
+    if method in ("upi", "razorpay_link"):
         message, fallback = upi_button_message(business, order), f"Pay here: {pay_url(order.id)}"
     elif method == "whatsapp_pay":
         message = order_details_message(business, order)

@@ -653,3 +653,92 @@ def test_failed_pay_button_falls_back_to_link(client, fake_ai, fake_whatsapp, mo
     monkeypatch.setattr(pay, "send_interactive", broken)
     order_id = place_whatsapp_order(client, fake_ai, "PN_UPI2", "919000000034", product["id"], qty=1)
     assert fake_whatsapp.sent[-1][3].startswith("Pay here: https://") and f"/pay/{order_id}?t=" in fake_whatsapp.sent[-1][3]
+
+
+# ---- Razorpay UPI app buttons (recommended, auto-confirmed) --------------------------------
+
+class FakeRazorpay:
+    """Stands in for razorpay.Client: creates orders, checks signatures against one known value."""
+
+    def __init__(self):
+        self.created = []
+        self.order = self
+        self.utility = self
+
+    def create(self, data):
+        self.created.append(data)
+        return {"id": f"order_RZP{len(self.created)}"}
+
+    def verify_payment_signature(self, params):
+        import razorpay
+        if params["razorpay_signature"] != "good-signature":
+            raise razorpay.errors.SignatureVerificationError("bad signature")
+
+
+def razorpay_seller(client, monkeypatch, pnid, **extra):
+    import routers.pay as pay
+    import routers.payments as payments
+    fake = FakeRazorpay()
+    monkeypatch.setattr(pay, "_razorpay_client", lambda business: fake)
+    monkeypatch.setattr(payments, "ensure_payment_link", lambda db, business, order: "https://rzp.io/l/more")
+    business_id, h = new_seller(client, wa_phone_number_id=pnid, wa_token="t", razorpay_key_id="rzp_test_1",
+                                razorpay_key_secret="secret", razorpay_webhook_secret="hook-rzp", **extra)
+    return business_id, h, fake
+
+
+def test_manual_upi_never_picked_automatically(client):
+    _, h = new_seller(client, upi_id="shop@okaxis")
+    assert client.get("/business", headers=h).json()["active_payment_method"] is None
+
+
+def test_razorpay_upi_buttons_amount_locked_and_signature_verified(client, fake_ai, fake_whatsapp, monkeypatch):
+    _, h, rzp = razorpay_seller(client, monkeypatch, "PN_RZPUPI")
+    product = add_product(client, h, "Pepper", price=229.5, stock=5)
+    order_id = place_whatsapp_order(client, fake_ai, "PN_RZPUPI", "919000000041", product["id"], qty=2)
+
+    assert client.get("/business", headers=h).json()["active_payment_method"] == "razorpay_link"
+    button = fake_whatsapp.payloads[-1]["interactive"]
+    assert button["type"] == "cta_url" and button["action"]["parameters"]["display_text"] == "Pay ₹459"
+    assert button["footer"]["text"] == "Secure payment by Razorpay"
+
+    pay_path = button["action"]["parameters"]["url"].split(".com", 1)[1]
+    page = client.get(pay_path).text
+    assert rzp.created == [{"amount": 45900, "currency": "INR", "receipt": f"order-{order_id}",
+                            "notes": {"order_id": str(order_id), "business_id": str(rzp_bid(client, h))}}]
+    for app in ("gpay", "phonepe", "paytm", "bhim"):
+        assert f"data-app='{app}'" in page
+    assert '"amount": 45900' in page and '"order_id": "order_RZP1"' in page and "https://rzp.io/l/more" in page
+    client.get(pay_path)
+    assert len(rzp.created) == 1  # reopening the page reuses the same Razorpay order
+
+    confirm = pay_path.replace("?t=", "/confirm?t=")
+    good = {"razorpay_payment_id": "pay_UPI1", "razorpay_order_id": "order_RZP1", "razorpay_signature": "good-signature"}
+    assert client.post(confirm, json={**good, "razorpay_signature": "forged"}).status_code == 400
+    assert client.post(confirm, json={**good, "razorpay_order_id": "order_OTHER"}).status_code == 400
+    assert not [o for o in client.get("/orders", headers=h).json() if o["id"] == order_id][0]["is_paid"]
+
+    assert client.post(confirm, json=good).json() == {"paid": True}
+    order = [o for o in client.get("/orders", headers=h).json() if o["id"] == order_id][0]
+    assert order["is_paid"] and "Payment received" in fake_whatsapp.sent[-1][3]
+    assert "Paid" in client.get(pay_path).text
+
+
+def rzp_bid(client, h):
+    return client.get("/business", headers=h).json()["id"]
+
+
+def test_razorpay_order_paid_webhook_confirms(client, fake_ai, fake_whatsapp, monkeypatch):
+    business_id, h, rzp = razorpay_seller(client, monkeypatch, "PN_RZPHOOK")
+    product = add_product(client, h, "Pepper", price=90, stock=5)
+    order_id = place_whatsapp_order(client, fake_ai, "PN_RZPHOOK", "919000000042", product["id"], qty=1)
+    pay_path = fake_whatsapp.payloads[-1]["interactive"]["action"]["parameters"]["url"].split(".com", 1)[1]
+    client.get(pay_path)  # customer opens the page -> Razorpay order created
+
+    body = json.dumps({"event": "order.paid", "payload": {
+        "order": {"entity": {"id": "order_RZP1"}},
+        "payment": {"entity": {"id": "pay_HOOK1", "amount": 9000}},
+    }}).encode()
+    url = f"/payments/webhook/razorpay/{business_id}"
+    assert client.post(url, content=body, headers=signed("hook-rzp", body)).json() == {"status": "ok"}
+    assert [o for o in client.get("/orders", headers=h).json() if o["id"] == order_id][0]["is_paid"]
+    assert client.post(url, content=body, headers=signed("hook-rzp", body)).json() == {"status": "already processed"}

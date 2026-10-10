@@ -92,6 +92,7 @@ class Order(Base):
     total_amount = Column(Float, default=0.0)
     is_paid = Column(Boolean, default=False, nullable=False)
     razorpay_payment_link_id = Column(String, nullable=True, index=True)
+    razorpay_order_id = Column(String, nullable=True, index=True)  # for UPI-app payments on our pay page
     payment_link_url = Column(String, nullable=True)
     razorpay_payment_id = Column(String, nullable=True, unique=True)
     paid_at = Column(DateTime(timezone=True), nullable=True)

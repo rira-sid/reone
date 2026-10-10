@@ -88,25 +88,24 @@ async def razorpay_webhook(business_id: int, request: Request, db: Session = Dep
         raise HTTPException(status_code=400, detail="Invalid webhook signature")
 
     event = await request.json()
-    if event.get("event") != "payment_link.paid":
-        return {"status": "ignored"}
-
-    link_entity = event["payload"]["payment_link"]["entity"]
-    payment_entity = event["payload"]["payment"]["entity"]
-
-    try:
-        order_id = int(link_entity["reference_id"])
-    except (KeyError, TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="Missing or invalid reference_id")
-
+    kind = event.get("event")
     # Row lock (Postgres) so two near-simultaneous deliveries of the same event can't both
     # pass the is_paid check below. SQLite ignores FOR UPDATE, which is fine for local dev.
-    order = (
-        db.query(models.Order)
-        .filter(models.Order.id == order_id, models.Order.business_id == business.id)
-        .with_for_update()
-        .first()
-    )
+    orders = db.query(models.Order).filter(models.Order.business_id == business.id).with_for_update()
+    if kind == "payment_link.paid":  # paid through a Razorpay payment link
+        try:
+            order_id = int(event["payload"]["payment_link"]["entity"]["reference_id"])
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Missing or invalid reference_id")
+        order = orders.filter(models.Order.id == order_id).first()
+    elif kind == "order.paid":  # paid from a UPI app button on our pay page
+        rp_order_id = (event.get("payload", {}).get("order", {}).get("entity") or {}).get("id")
+        if not rp_order_id:
+            raise HTTPException(status_code=400, detail="Missing order id")
+        order = orders.filter(models.Order.razorpay_order_id == rp_order_id).first()
+    else:
+        return {"status": "ignored"}
+    payment_entity = event["payload"]["payment"]["entity"]
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
