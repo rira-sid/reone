@@ -1,18 +1,37 @@
-"""Claude-powered order assistant: reads the customer's WhatsApp message, keeps the cart up to
-date, collects name + address, and replies in the customer's own language - all in one call."""
+"""AI order assistant: reads the customer's WhatsApp message, keeps the cart up to date, collects
+name + address, and replies in the customer's own language - all in one call.
+
+AI_PROVIDER picks the model: "gemini" (default, Google's free tier, needs GEMINI_API_KEY) or
+"anthropic" (Claude, paid, needs ANTHROPIC_API_KEY). Switching is just an env var change."""
 import base64
 import json
+import os
 from typing import Literal
 
-import anthropic
 from pydantic import BaseModel
 
 import models
 
-MODEL = "claude-opus-5-5"
+AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini").lower()
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5-5")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 HISTORY_LIMIT = 20
 
-_client = anthropic.AsyncAnthropic()  # reads ANTHROPIC_API_KEY from the environment
+_clients: dict = {}  # created on first use, so a missing key for the unused provider doesn't matter
+
+
+def _anthropic_client():
+    if "anthropic" not in _clients:
+        import anthropic
+        _clients["anthropic"] = anthropic.AsyncAnthropic()  # reads ANTHROPIC_API_KEY
+    return _clients["anthropic"]
+
+
+def _gemini_client():
+    if "gemini" not in _clients:
+        from google import genai
+        _clients["gemini"] = genai.Client()  # reads GEMINI_API_KEY
+    return _clients["gemini"]
 
 SYSTEM_PROMPT = """You are the WhatsApp order assistant for a small Indian business. Customers message \
 you to buy products from the catalog below. Your job is to take the order end to end so the seller only \
@@ -69,7 +88,7 @@ class AssistantTurn(BaseModel):
 
 
 class AssistantUnavailable(Exception):
-    """Claude declined or returned nothing usable - hand the chat to the seller."""
+    """The model declined or returned nothing usable - hand the chat to the seller."""
 
 
 def _catalog_text(products: list[models.Product]) -> str:
@@ -102,7 +121,7 @@ def _orders_text(orders: list[models.Order]) -> str:
     return "\n".join(lines)
 
 
-# Image types the Claude API accepts.
+# Image types both providers accept.
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
 
@@ -129,16 +148,24 @@ async def run_turn(
         f"<conversation>\n{_transcript(conversation)}\n</conversation>\n\n"
         "Respond to the customer's latest message."
     )
+    if image and image[1] not in SUPPORTED_IMAGE_TYPES:
+        image = None
+    if AI_PROVIDER == "anthropic":
+        return await _run_claude(prompt, image)
+    return await _run_gemini(prompt, image)
+
+
+async def _run_claude(prompt: str, image: tuple[bytes, str] | None) -> AssistantTurn:
     user_content: list[dict] = []
-    if image and image[1] in SUPPORTED_IMAGE_TYPES:
+    if image:
         user_content.append({
             "type": "image",
             "source": {"type": "base64", "media_type": image[1], "data": base64.standard_b64encode(image[0]).decode()},
         })
     user_content.append({"type": "text", "text": prompt})
 
-    response = await _client.messages.parse(
-        model=MODEL,
+    response = await _anthropic_client().messages.parse(
+        model=CLAUDE_MODEL,
         max_tokens=16000,
         system=SYSTEM_PROMPT,
         output_config={"effort": "low"},
@@ -149,3 +176,30 @@ async def run_turn(
     if response.stop_reason == "refusal" or response.parsed_output is None:
         raise AssistantUnavailable(f"stop_reason={response.stop_reason} request_id={response._request_id}")
     return response.parsed_output
+
+
+async def _run_gemini(prompt: str, image: tuple[bytes, str] | None) -> AssistantTurn:
+    from google.genai import types
+
+    contents: list = []
+    if image:
+        contents.append(types.Part.from_bytes(data=image[0], mime_type=image[1]))
+    contents.append(prompt)
+
+    response = await _gemini_client().aio.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            response_mime_type="application/json",
+            response_schema=AssistantTurn,
+        ),
+    )
+    if isinstance(response.parsed, AssistantTurn):
+        return response.parsed
+    if not response.text:
+        raise AssistantUnavailable(f"Gemini returned no text (prompt_feedback={response.prompt_feedback})")
+    try:
+        return AssistantTurn.model_validate_json(response.text)
+    except ValueError as exc:
+        raise AssistantUnavailable(f"Gemini returned unparseable output: {exc}") from exc

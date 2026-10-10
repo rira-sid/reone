@@ -3,6 +3,7 @@ uvicorn[standard]
 httpx
 python-dotenv
 anthropic
+google-genai
 sqlalchemy
 razorpay
 cryptography

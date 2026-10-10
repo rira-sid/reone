@@ -15,7 +15,11 @@ FastAPI service behind the WhatsApp ordering bot and the seller dashboard.
 | Variable | Required | What it does |
 |---|---|---|
 | `DATABASE_URL` | Yes in production | Postgres URL. Without it a local SQLite file is used - on Render that file is wiped on every deploy. |
-| `ANTHROPIC_API_KEY` | Yes | Claude API key (console.anthropic.com). Without it every chat is handed to the seller. |
+| `AI_PROVIDER` | No | `gemini` (default, free tier) or `anthropic` (Claude, paid). |
+| `GEMINI_API_KEY` | If gemini | Free key from aistudio.google.com. Without the active provider's key every chat is handed to the seller. |
+| `GEMINI_MODEL` | No | Defaults to `gemini-flash-latest`. |
+| `ANTHROPIC_API_KEY` | If anthropic | Claude API key (console.anthropic.com). |
+| `CLAUDE_MODEL` | No | Defaults to `claude-opus-5-5`; `claude-haiku-5-5` is far cheaper. |
 | `SECRET_KEY` | Yes | Long random string. Encrypts sellers' WhatsApp/Razorpay secrets and signs logins and invoice links. **Never change it** once sellers have connected accounts - their saved keys become unreadable. |
 | `WHATSAPP_VERIFY_TOKEN` | Yes | The verify token entered in Meta's webhook settings. |
 | `DASHBOARD_PASSWORD` | Recommended | Password for the original business (id 1). Until set, business 1's dashboard API is open to anyone. |
