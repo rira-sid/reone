@@ -3,8 +3,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./riraone.db")
-if DATABASE_URL.startswith("postgres://"):  # SQLAlchemy only accepts the postgresql:// scheme
-    DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
+# Name the driver explicitly: newer SQLAlchemy defaults postgresql:// to psycopg 3, but we ship psycopg2.
+for prefix in ("postgres://", "postgresql://"):
+    if DATABASE_URL.startswith(prefix):
+        DATABASE_URL = "postgresql+psycopg2://" + DATABASE_URL[len(prefix):]
 
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
