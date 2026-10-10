@@ -14,10 +14,12 @@ Submit this in **WhatsApp Manager → Message templates → Create template**:
 **Body:**
 
 ```
-Hi {{1}}, here's an update on your order #{{2}}: {{3}}
+Hi {{1}}, here's an update on your order #{{2}}: {{3}}. Thank you for shopping with us!
 ```
 
-Sample values Meta asks for: `{{1}}` = `Ravi`, `{{2}}` = `12`, `{{3}}` = `It has been shipped. Tracking: DTDC 7781234`.
+(Meta rejects templates that start or end with a variable, hence the closing sentence.)
+
+Sample values Meta asks for: `{{1}}` = `Ravi`, `{{2}}` = `12`, `{{3}}` = `It has been shipped, tracking DTDC 7781234`.
 
 Until it's approved, updates outside the 24-hour window just fail quietly (logged as
 `ORDER UPDATE NOT DELIVERED`) - the order itself is still updated.
