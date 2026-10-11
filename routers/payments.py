@@ -107,6 +107,10 @@ async def razorpay_webhook(business_id: int, request: Request, db: Session = Dep
         if not rp_order_id:
             raise HTTPException(status_code=400, detail="Missing order id")
         order = orders.filter(models.Order.razorpay_order_id == rp_order_id).first()
+        if not order:
+            # A payment link makes its own Razorpay order, so link payments also fire order.paid.
+            # payment_link.paid handles those - answer 200 so Razorpay doesn't retry or disable the hook.
+            return {"status": "ignored"}
     else:
         return {"status": "ignored"}
     payment_entity = event["payload"]["payment"]["entity"]

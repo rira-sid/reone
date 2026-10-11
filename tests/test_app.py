@@ -769,3 +769,14 @@ def test_more_options_opens_razorpay_link_not_the_pay_page(client, fake_ai, fake
     assert "href='https://rzp.io/l/real-link'" in page
     with SessionLocal() as db:
         assert db.get(models.Order, order_id).payment_link_url == pay_page  # customer's link unchanged
+
+
+def test_order_paid_from_a_payment_link_is_acknowledged(client):
+    business_id, _ = new_seller(client, razorpay_key_id="rzp_test_1", razorpay_key_secret="s",
+                                razorpay_webhook_secret="hook-x")
+    body = json.dumps({"event": "order.paid", "payload": {
+        "order": {"entity": {"id": "order_made_by_payment_link"}},
+        "payment": {"entity": {"id": "pay_x", "amount": 10000}},
+    }}).encode()
+    r = client.post(f"/payments/webhook/razorpay/{business_id}", content=body, headers=signed("hook-x", body))
+    assert r.status_code == 200 and r.json()["status"] == "ignored"
