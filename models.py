@@ -93,7 +93,8 @@ class Order(Base):
     is_paid = Column(Boolean, default=False, nullable=False)
     razorpay_payment_link_id = Column(String, nullable=True, index=True)
     razorpay_order_id = Column(String, nullable=True, index=True)  # for UPI-app payments on our pay page
-    payment_link_url = Column(String, nullable=True)
+    payment_link_url = Column(String, nullable=True)  # where the customer is sent to pay (often our pay page)
+    razorpay_link_url = Column(String, nullable=True)  # Razorpay's hosted payment link (cards, netbanking, QR)
     razorpay_payment_id = Column(String, nullable=True, unique=True)
     paid_at = Column(DateTime(timezone=True), nullable=True)
     tracking_info = Column(Text, nullable=True)

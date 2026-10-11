@@ -742,3 +742,30 @@ def test_razorpay_order_paid_webhook_confirms(client, fake_ai, fake_whatsapp, mo
     assert client.post(url, content=body, headers=signed("hook-rzp", body)).json() == {"status": "ok"}
     assert [o for o in client.get("/orders", headers=h).json() if o["id"] == order_id][0]["is_paid"]
     assert client.post(url, content=body, headers=signed("hook-rzp", body)).json() == {"status": "already processed"}
+
+
+def test_more_options_opens_razorpay_link_not_the_pay_page(client, fake_ai, fake_whatsapp, monkeypatch):
+    import routers.pay as pay
+    import routers.payments as payments
+
+    class FakeLinks:
+        def create(self, data):
+            return {"id": "plink_1", "short_url": "https://rzp.io/l/real-link"}
+
+    class FakeClient(FakeRazorpay):
+        payment_link = FakeLinks()
+
+    fake = FakeClient()
+    monkeypatch.setattr(pay, "_razorpay_client", lambda business: fake)
+    monkeypatch.setattr(payments, "_client", lambda business: fake)
+    _, h = new_seller(client, wa_phone_number_id="PN_MORE", wa_token="t", razorpay_key_id="rzp_test_1",
+                      razorpay_key_secret="secret", razorpay_webhook_secret="hook-rzp")
+    product = add_product(client, h, "Pepper", price=80, stock=5)
+    order_id = place_whatsapp_order(client, fake_ai, "PN_MORE", "919000000077", product["id"], qty=1)
+    with SessionLocal() as db:
+        pay_page = db.get(models.Order, order_id).payment_link_url
+
+    page = client.get(pay_page.split("onrender.com", 1)[-1] if "onrender.com" in pay_page else pay_page).text
+    assert "href='https://rzp.io/l/real-link'" in page
+    with SessionLocal() as db:
+        assert db.get(models.Order, order_id).payment_link_url == pay_page  # customer's link unchanged
