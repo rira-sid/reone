@@ -1,7 +1,8 @@
-"""Spoken replies: turn a short text into an MP3 voice note with Gemini's text-to-speech model.
+"""Spoken replies: turn a short text into a WhatsApp voice note with Gemini's text-to-speech model.
 
 Gemini TTS speaks 100+ languages and picks the language up from the text itself. It returns a
-24 kHz mono WAV; WhatsApp doesn't accept WAV, so we re-encode it as MP3 (lameenc, no ffmpeg needed).
+24 kHz mono WAV; WhatsApp only shows a voice-note bubble for OGG/Opus, so we re-encode it with
+PyAV (bundles libopus, no ffmpeg install needed).
 
 VOICE_REPLIES=off turns voice notes off. Needs GEMINI_API_KEY even when AI_PROVIDER=anthropic."""
 import asyncio
@@ -10,7 +11,7 @@ import io
 import os
 import wave
 
-import lameenc
+import av
 
 import ai
 
@@ -23,20 +24,27 @@ def enabled() -> bool:
     return VOICE_REPLIES and bool(os.getenv("GEMINI_API_KEY"))
 
 
-def _wav_to_mp3(wav_bytes: bytes) -> bytes:
+def _wav_to_ogg(wav_bytes: bytes) -> bytes:
     with wave.open(io.BytesIO(wav_bytes)) as w:
         rate, channels = w.getframerate(), w.getnchannels()
         pcm = w.readframes(w.getnframes())
-    encoder = lameenc.Encoder()
-    encoder.set_bit_rate(48)  # plenty for speech, keeps a 15s note around 90 KB
-    encoder.set_in_sample_rate(rate)
-    encoder.set_channels(channels)
-    encoder.set_quality(5)
-    return bytes(encoder.encode(pcm) + encoder.flush())
+    frame = av.AudioFrame(format="s16", layout="mono" if channels == 1 else "stereo", samples=len(pcm) // (2 * channels))
+    frame.planes[0].update(pcm)
+    frame.sample_rate = rate
+    out = io.BytesIO()
+    with av.open(out, "w", format="ogg") as container:
+        stream = container.add_stream("libopus", rate=48000)  # encoder resamples the 24 kHz input
+        stream.layout = "mono"
+        stream.bit_rate = 32000  # plenty for speech, keeps a 15s note around 60 KB
+        for packet in stream.encode(frame):
+            container.mux(packet)
+        for packet in stream.encode(None):
+            container.mux(packet)
+    return out.getvalue()
 
 
 async def synthesize(text: str) -> bytes:
-    """Return MP3 bytes of `text` spoken aloud. Raises on any API or encoding failure."""
+    """Return OGG/Opus bytes of `text` spoken aloud. Raises on any API or encoding failure."""
     try:
         return await _synthesize_once(text)
     except Exception as e:  # free-tier 503/429 usually clears within seconds
@@ -61,4 +69,4 @@ async def _synthesize_once(text: str) -> bytes:
         response_format={"type": "audio"},
         generation_config={"speech_config": [{"voice": TTS_VOICE}]},
     )
-    return _wav_to_mp3(base64.b64decode(interaction.output_audio.data))
+    return _wav_to_ogg(base64.b64decode(interaction.output_audio.data))

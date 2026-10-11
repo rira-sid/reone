@@ -57,10 +57,10 @@ async def send_interactive(creds: WhatsAppCreds | None, to: str, interactive: di
                                 "type": "interactive", "interactive": interactive})
 
 
-async def send_audio(creds: WhatsAppCreds | None, to: str, data: bytes, mime_type: str = "audio/mpeg"):
-    """Upload an audio file to WhatsApp and send it to the customer as a playable audio message."""
-    media_id = await upload_media(creds, data, mime_type, "reply.mp3")
-    await _post_message(creds, {"messaging_product": "whatsapp", "to": to, "type": "audio", "audio": {"id": media_id}})
+async def send_audio(creds: WhatsAppCreds | None, to: str, data: bytes, mime_type: str = "audio/ogg"):
+    """Upload an OGG/Opus clip to WhatsApp and send it to the customer as a voice note."""
+    media_id = await upload_media(creds, data, mime_type, "reply.ogg")
+    await _post_message(creds, {"messaging_product": "whatsapp", "to": to, "type": "audio", "audio": {"id": media_id, "voice": True}})
 
 
 async def upload_media(creds: WhatsAppCreds | None, data: bytes, mime_type: str, filename: str) -> str:

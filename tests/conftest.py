@@ -95,7 +95,7 @@ def fake_voice(monkeypatch):
 
     async def synthesize(text):
         spoken.append(text)
-        return b"fake-mp3"
+        return b"fake-ogg"
 
     async def upload_media(creds, data, mime_type, filename):
         return "MEDIA_REPLY"
