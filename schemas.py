@@ -2,17 +2,41 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 
+class VariantIn(BaseModel):
+    id: int | None = None
+    label: str
+    price: float
+    stock: int = 0
+
+
+class VariantOut(BaseModel):
+    id: int
+    label: str
+    price: float
+    stock: int
+
+
+class ImageOut(BaseModel):
+    id: int
+    url: str
+
+
+class ImageUpload(BaseModel):
+    data: str  # data URL
+
+
 class ProductBase(BaseModel):
     name: str
-    price: float
+    price: float = 0
     stock: int = 0
     unit: str = "pcs"
     category: str | None = None
     description: str | None = None
+    nutrition: str | None = None
 
 
 class ProductCreate(ProductBase):
-    pass
+    variants: list[VariantIn] = []
 
 
 class ProductUpdate(BaseModel):
@@ -22,12 +46,14 @@ class ProductUpdate(BaseModel):
     unit: str | None = None
     category: str | None = None
     description: str | None = None
+    nutrition: str | None = None
+    variants: list[VariantIn] | None = None
 
 
 class ProductOut(ProductBase):
     id: int
-
-    model_config = ConfigDict(from_attributes=True)
+    variants: list[VariantOut] = []
+    images: list[ImageOut] = []
 
 
 class CustomerBase(BaseModel):
@@ -45,11 +71,13 @@ class CustomerOut(CustomerBase):
 class OrderItemCreate(BaseModel):
     product_id: int
     quantity: int
+    variant_id: int | None = None
 
 
 class OrderItemOut(BaseModel):
     id: int
     product_id: int
+    variant_id: int | None = None
     product_name: str
     quantity: int
     price_at_order: float

@@ -2,9 +2,14 @@
 
 FastAPI service behind the WhatsApp ordering bot and the seller dashboard.
 
-- **WhatsApp webhook** (`/webhook`): incoming messages are routed to the seller whose number they
-  were sent to; Claude reads the order, collects name + address, replies in the customer's language,
-  and turns a confirmed cart into an order with a Razorpay payment link.
+- **WhatsApp webhook** (`/webhook`): first message gets a language menu (19 languages), then a welcome
+  with a "Shop now" button. The AI (Gemini by default) only sorts messages: wants to buy -> shop link with
+  the cart pre-filled; order status -> answered from the order data; anything else -> the seller.
+- **Seller alerts** (`seller_alerts.py`): questions go to the seller's own WhatsApp (`alert_phone`); the
+  seller swipe-replies and the answer reaches the customer (`#bot` hands the chat back). Re-alert after
+  5 min, "seller is busy" to the customer after 15 min.
+- **Shop** (`/shop/{business_id}`): photos, sizes, nutrition facts, cart and checkout on one page, in the
+  customer's language (`locales/*.json`). Checkout places the order and opens the pay page.
 - **Dashboard API**: products, orders, inbox (`/conversations`), seller settings (`/business`), login.
 - **Razorpay webhook** (`/payments/webhook/razorpay/{business_id}`): marks orders paid, deducts stock,
   sends the customer a confirmation with their invoice link.
@@ -19,8 +24,7 @@ FastAPI service behind the WhatsApp ordering bot and the seller dashboard.
 | `GEMINI_API_KEY` | If gemini | Free key from aistudio.google.com. Without the active provider's key every chat is handed to the seller. |
 | `GEMINI_MODEL` | No | Defaults to `gemini-flash-latest`. |
 | `GEMINI_FALLBACK_MODEL` | No | Tried when the main model is busy (503/429). Defaults to `gemini-flash-lite-latest`. |
-| `VOICE_REPLIES` | No | `on` (default) or `off`. Voice notes in, voice replies out, spoken order confirmations. Needs `GEMINI_API_KEY`. |
-| `TTS_MODEL` / `TTS_VOICE` | No | Speech model and voice. Defaults `gemini-3.8-flash-lite-tts` / `Kore`. |
+| `CANCEL_UNPAID_AFTER_HOURS` | No | Unpaid online orders are cancelled after this long. Default `24`. |
 | `ANTHROPIC_API_KEY` | If anthropic | Claude API key (console.anthropic.com). |
 | `CLAUDE_MODEL` | No | Defaults to `claude-opus-5-5`; `claude-haiku-5-5` is far cheaper. |
 | `SECRET_KEY` | Yes | Long random string. Encrypts sellers' WhatsApp/Razorpay secrets and signs logins and invoice links. **Never change it** once sellers have connected accounts - their saved keys become unreadable. |

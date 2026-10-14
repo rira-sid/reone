@@ -1,30 +1,80 @@
-"""Public catalog page a seller can share (Instagram bio, WhatsApp Status...). Each product has an
-"Order on WhatsApp" button that opens a chat with the shop, pre-filled with the item."""
+"""The customer shop: a colourful, easy catalog page (photos, sizes, nutrition facts, cart) with
+checkout on the same page - name, address, pay. The order is placed automatically and the customer
+goes straight to payment; confirmation, invoice and updates follow on WhatsApp.
+
+Links sent in WhatsApp carry `c` (the customer's number, signed - so it can't be changed), `lang`
+(their chosen language) and optionally `add` (cart pre-filled from what they asked for in chat)."""
+import json
 import re
 from html import escape
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import models
+import schemas
+from business import whatsapp_creds
 from database import get_db
+from languages import LANGUAGES, RTL, TEXTS, available_languages, lang_code, language_name, t
+from routers.orders import place_order
+from routers.pay import effective_payment_method, pay_url, send_payment_request
+from whatsapp import WhatsAppSendError, send_message
 
 router = APIRouter(prefix="/shop", tags=["shop"])
 
 
-def _wa_link(phone: str | None, text: str) -> str | None:
+def _wa_link(phone: str | None, text: str = "") -> str | None:
+    from urllib.parse import quote
+
     digits = re.sub(r"\D", "", phone or "")
     if len(digits) == 10:  # Indian mobile without country code
         digits = "91" + digits
     if len(digits) < 11:
         return None
-    return f"https://wa.me/{digits}?text={quote(text)}"
+    return f"https://wa.me/{digits}" + (f"?text={quote(text)}" if text else "")
+
+
+@router.get("/image/{image_id}")
+def product_image(image_id: int, db: Session = Depends(get_db)):
+    image = db.get(models.ProductImage, image_id)
+    if not image:
+        raise HTTPException(status_code=404, detail="Not found")
+    # Photos never change in place (a new upload gets a new id), so browsers can keep them.
+    return Response(image.data, media_type=image.mime_type,
+                    headers={"Cache-Control": "public, max-age=604800, immutable"})
+
+
+def _nutrition_rows(text: str | None) -> list[list[str]]:
+    rows = []
+    for line in (text or "").splitlines():
+        if not line.strip():
+            continue
+        label, _, value = line.partition(":")
+        rows.append([label.strip(), value.strip()])
+    return rows
+
+
+def _catalog_json(business: models.Business, products: list[models.Product]) -> list[dict]:
+    from routers.products import image_url
+
+    out = []
+    for p in sorted(products, key=lambda p: ((p.category or "~").lower(), p.name.lower())):
+        variants = [{"id": v.id, "label": v.label, "price": v.price, "stock": v.stock} for v in p.active_variants]
+        out.append({
+            "id": p.id, "name": p.name, "category": p.category or "", "description": p.description or "",
+            "unit": p.unit or "", "price": p.price, "stock": p.stock, "variants": variants,
+            "images": [image_url(i) for i in p.images], "nutrition": _nutrition_rows(p.nutrition),
+        })
+    return out
 
 
 @router.get("/{business_id}", response_class=HTMLResponse)
-def catalog(business_id: int, db: Session = Depends(get_db)):
+def catalog(business_id: int, c: str | None = None, lang: str | None = None, add: str | None = None,
+            db: Session = Depends(get_db)):
+    from chatbot import phone_from_token
+
     business = db.get(models.Business, business_id)
     if not business:
         raise HTTPException(status_code=404, detail="Shop not found")
@@ -33,82 +83,498 @@ def catalog(business_id: int, db: Session = Depends(get_db)):
         .filter(models.Product.business_id == business.id, models.Product.is_active.is_(True))
         .all()
     )
-    groups: dict[str, list[models.Product]] = {}
-    for p in sorted(products, key=lambda p: ((p.category or "~").lower(), p.name.lower())):
-        groups.setdefault(p.category or "Other", []).append(p)
+    phone = phone_from_token(business.id, c)
+    customer = None
+    if phone:
+        customer = db.query(models.Customer).filter(
+            models.Customer.business_id == business.id, models.Customer.phone == phone).first()
+        conversation = db.query(models.Conversation).filter(
+            models.Conversation.business_id == business.id, models.Conversation.phone == phone).first()
+        if not lang and conversation:
+            lang = conversation.preferred_language
+    code = lang_code(lang)
+    prefill = []
+    for part in (add or "").split(","):
+        m = re.fullmatch(r"(\d+)(?:-(\d+))?:(\d+)", part.strip())
+        if m:
+            prefill.append({"product_id": int(m[1]), "variant_id": int(m[2]) if m[2] else None,
+                            "quantity": min(int(m[3]), 99)})
+    rules = {
+        "delivery_fee": business.delivery_fee or 0, "free_above": business.free_delivery_above or 0,
+        "min_order": business.min_order_amount or 0, "cod": business.cod_enabled,
+        "open": business.accepting_orders,
+        "closed_message": business.closed_message or t(code, "closed"),
+    }
+    data = {
+        "shop": {"id": business.id, "name": business.name, "address": business.address or ""},
+        "products": _catalog_json(business, products),
+        "rules": rules, "lang": code, "texts": TEXTS[code], "token": c if phone else None,
+        "customer": {"name": (customer.name if customer and customer.name != phone else ""),
+                     "address": customer.address if customer else "", "phone": phone or ""},
+        "prefill": prefill,
+        "languages": [[k, LANGUAGES[k][0]] for k in available_languages()],
+        "whatsapp": _wa_link(business.phone),
+    }
+    payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    return HTMLResponse(SHOP_HTML
+                        .replace("__LANG__", code)
+                        .replace("__DIR__", "rtl" if code in RTL else "ltr")
+                        .replace("__TITLE__", escape(business.name))
+                        .replace("__DATA__", payload))
 
-    sections = []
-    for category, items in groups.items():
-        cards = []
-        for p in items:
-            link = _wa_link(business.phone, f"Hi! I'd like to order {p.name}.")
-            available = p.stock > 0
-            button = (f'<a class="order" href="{escape(link)}">Order on WhatsApp</a>' if link and available
-                      else '<span class="soldout">Out of stock</span>' if not available else "")
-            description = f'<p class="desc">{escape(p.description)}</p>' if p.description else ""
-            cards.append(
-                f'<li class="{"" if available else "out"}"><div><h3>{escape(p.name)}</h3>{description}'
-                f'<p class="price">₹{p.price:g} <span>/ {escape(p.unit or "pcs")}</span></p></div>{button}</li>'
-            )
-        heading = f"<h2>{escape(category)}</h2>" if len(groups) > 1 or category != "Other" else ""
-        sections.append(f'<section>{heading}<ul>{"".join(cards)}</ul></section>')
 
-    chat_link = _wa_link(business.phone, "Hi! I'd like to place an order.")
-    chat_button = f'<a class="chat" href="{escape(chat_link)}">Chat to order</a>' if chat_link else ""
-    notices = []
+# ---- checkout --------------------------------------------------------------------------------
+
+class CheckoutItem(BaseModel):
+    product_id: int
+    variant_id: int | None = None
+    quantity: int
+
+
+class CheckoutIn(BaseModel):
+    items: list[CheckoutItem]
+    name: str
+    address: str
+    phone: str | None = None
+    c: str | None = None  # signed customer token from the WhatsApp link
+    note: str | None = None
+    payment_method: str = "online"
+    lang: str | None = None
+
+
+def _summary(order: models.Order) -> str:
+    lines = [f"🧾 Order #{order.id}"]
+    lines += [f"• {i.quantity} × {i.display_name} - ₹{i.price_at_order * i.quantity:g}" for i in order.items]
+    if order.delivery_fee:
+        lines.append(f"🚚 Delivery ₹{order.delivery_fee:g}")
+    lines.append(f"*Total ₹{order.total_amount:g}*")
+    lines.append(f"📍 {order.customer.address}")
+    if order.customer_note:
+        lines.append(f"📝 {order.customer_note}")
+    return "\n".join(lines)
+
+
+@router.post("/{business_id}/checkout")
+async def checkout(business_id: int, payload: CheckoutIn, db: Session = Depends(get_db)):
+    from chatbot import normalize_phone, phone_from_token
+    from notifications import within_service_window
+    from seller_alerts import notify_seller
+
+    business = db.get(models.Business, business_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    code = lang_code(payload.lang)
     if not business.accepting_orders:
-        notices.append(escape(business.closed_message or "We're not taking orders right now - back soon!"))
-    if business.delivery_fee:
-        fee = f"Delivery ₹{business.delivery_fee:g}"
-        if business.free_delivery_above:
-            fee += f" · free above ₹{business.free_delivery_above:g}"
-        notices.append(fee)
-    if business.min_order_amount:
-        notices.append(f"Minimum order ₹{business.min_order_amount:g}")
-    if business.cod_enabled:
-        notices.append("Cash on delivery available")
-    notice_html = "".join(f"<span>{n}</span>" for n in notices)
-    body = "".join(sections) if sections else '<p class="empty">No products listed yet.</p>'
+        raise HTTPException(status_code=400, detail=business.closed_message or t(code, "closed"))
+    phone = phone_from_token(business.id, payload.c) or normalize_phone(payload.phone)
+    if not 11 <= len(phone) <= 15:
+        raise HTTPException(status_code=400, detail="Please enter your WhatsApp number with country code")
+    name, address = payload.name.strip(), payload.address.strip()
+    if not name or len(address) < 8:
+        raise HTTPException(status_code=400, detail="Please enter your name and full delivery address")
+    if not payload.items:
+        raise HTTPException(status_code=400, detail=t(code, "empty_cart"))
 
-    html = f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{escape(business.name)}</title>
-<meta property="og:title" content="{escape(business.name)}">
-<meta property="og:description" content="Browse our products and order on WhatsApp.">
+    customer = db.query(models.Customer).filter(
+        models.Customer.business_id == business.id, models.Customer.phone == phone).first()
+    if not customer:
+        customer = models.Customer(business_id=business.id, name=name, phone=phone)
+        db.add(customer)
+    customer.name, customer.address = name, address
+    conversation = db.query(models.Conversation).filter(
+        models.Conversation.business_id == business.id, models.Conversation.phone == phone).first()
+    if not conversation:
+        conversation = models.Conversation(business_id=business.id, phone=phone)
+        db.add(conversation)
+    conversation.customer_name, conversation.delivery_address = name, address
+    if not conversation.preferred_language:
+        conversation.preferred_language = code
+        conversation.language = language_name(code)
+    db.flush()
+
+    method = "cod" if payload.payment_method == "cod" else "online"
+    items = [schemas.OrderItemCreate(product_id=i.product_id, variant_id=i.variant_id, quantity=i.quantity)
+             for i in payload.items if i.quantity > 0]
+    try:
+        order = place_order(db, business, customer, items, method, payload.note, check_stock=True)
+    except HTTPException:
+        db.rollback()
+        raise
+    pay_method = effective_payment_method(business) if method == "online" else None
+    if pay_method in ("upi", "razorpay_link"):
+        order.payment_link_url = pay_url(order.id)
+    db.commit()
+    db.refresh(order)
+
+    creds = whatsapp_creds(business)
+    summary = _summary(order)
+    can_message = within_service_window(conversation)
+    if can_message:
+        text = summary + ("\n\n" + t(code, "order_placed_cod", amount=f"{order.total_amount:g}") if method == "cod" else "")
+        try:
+            await send_message(creds, phone, text)
+            db.add(models.Message(conversation_id=conversation.id, sender="system", text=text))
+            db.commit()
+        except WhatsAppSendError as e:
+            print("ORDER SUMMARY NOT DELIVERED:", e)
+        if method == "online" and pay_method:
+            await send_payment_request(business, order, phone)
+    await notify_seller(db, business, f"🛒 New order #{order.id} from {name} - ₹{order.total_amount:g}"
+                                      f" ({'cash on delivery' if method == 'cod' else 'online, awaiting payment'})")
+
+    response = {"order_id": order.id, "total": order.total_amount, "redirect": None, "message": ""}
+    if method == "cod":
+        response["message"] = t(code, "order_placed_cod", amount=f"{order.total_amount:g}")
+    elif pay_method in ("upi", "razorpay_link"):
+        response["redirect"] = pay_url(order.id)
+    elif pay_method == "whatsapp_pay":
+        if not can_message:
+            await send_payment_request(business, order, phone)
+        response["message"] = "Open WhatsApp and tap 'Review and pay' to complete your payment."
+    else:
+        response["message"] = "The seller will send you the payment details on WhatsApp shortly."
+        await notify_seller(db, business, f"⚠️ Order #{order.id} has no online payment set up - "
+                                          "send the customer payment details, or connect Razorpay in Settings.")
+    return response
+
+
+SHOP_HTML = r"""<!doctype html>
+<html lang="__LANG__" dir="__DIR__"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#7c3aed">
+<title>__TITLE__</title>
+<meta property="og:title" content="__TITLE__">
+<meta property="og:description" content="Shop online - order and pay in a minute.">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&family=Noto+Sans:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
-  :root {{ --accent: #0f9d6e; --text: #15181e; --muted: #6b7280; --border: #e4e7eb; --bg: #f6f7f9; }}
-  * {{ box-sizing: border-box; }}
-  body {{ margin: 0; font-family: "Noto Sans", "Segoe UI", system-ui, sans-serif; color: var(--text); background: var(--bg); }}
-  header {{ background: #11161d; color: #fff; padding: 28px 16px 22px; text-align: center; }}
-  header h1 {{ margin: 0 0 6px; font-size: 1.5rem; }}
-  header p {{ margin: 0; color: #c6ccd6; font-size: .9rem; }}
-  .notices {{ display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 14px; }}
-  .notices span {{ background: rgba(255,255,255,.1); border-radius: 999px; padding: 4px 10px; font-size: .78rem; }}
-  .chat {{ display: inline-block; margin-top: 16px; background: var(--accent); color: #fff; text-decoration: none;
-           padding: 10px 20px; border-radius: 999px; font-weight: 700; }}
-  main {{ max-width: 720px; margin: 0 auto; padding: 16px; }}
-  h2 {{ font-size: 1rem; margin: 20px 4px 10px; }}
-  ul {{ list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }}
-  li {{ background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
-        display: flex; justify-content: space-between; align-items: center; gap: 12px; }}
-  li.out {{ opacity: .6; }}
-  h3 {{ margin: 0 0 2px; font-size: .98rem; }}
-  .desc {{ margin: 0 0 4px; color: var(--muted); font-size: .82rem; }}
-  .price {{ margin: 0; font-weight: 700; }} .price span {{ color: var(--muted); font-weight: 400; font-size: .8rem; }}
-  .order {{ flex-shrink: 0; background: var(--accent); color: #fff; text-decoration: none; padding: 8px 12px;
-            border-radius: 8px; font-size: .8rem; font-weight: 700; }}
-  .soldout {{ flex-shrink: 0; color: #b91c1c; font-size: .8rem; font-weight: 600; }}
-  .empty {{ text-align: center; color: var(--muted); }}
-  footer {{ text-align: center; color: var(--muted); font-size: .75rem; padding: 24px 16px 32px; }}
+:root{--violet:#7c3aed;--pink:#ec4899;--orange:#f97316;--yellow:#facc15;--green:#16a34a;--green-d:#15803d;
+ --ink:#1e1b2e;--muted:#5b5670;--line:#ece8f5;--bg:#faf7ff;--card:#fff;--radius:20px}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{font-size:17px}
+body{margin:0;font-family:"Noto Sans",system-ui,sans-serif;color:var(--ink);background:var(--bg);padding-bottom:110px}
+button,input,textarea,select{font:inherit;color:inherit}
+:focus-visible{outline:3px solid var(--orange);outline-offset:2px;border-radius:10px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+header{background:linear-gradient(135deg,#7c3aed 0%,#db2777 55%,#f97316 100%);color:#fff;padding:18px 16px 54px;position:relative;overflow:hidden}
+header:after{content:"";position:absolute;right:-40px;top:-40px;width:160px;height:160px;border-radius:50%;background:rgba(255,255,255,.12)}
+.top{display:flex;justify-content:space-between;align-items:center;gap:10px;max-width:960px;margin:0 auto;position:relative;z-index:1}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.logo{width:48px;height:48px;border-radius:16px;background:#fff;color:var(--violet);display:grid;place-items:center;font:800 1.5rem "Baloo 2",sans-serif;flex-shrink:0;box-shadow:0 6px 16px rgba(0,0,0,.15)}
+h1{font:800 1.45rem/1.1 "Baloo 2",sans-serif;margin:0;overflow-wrap:anywhere}
+.addr{margin:2px 0 0;font-size:.82rem;opacity:.9}
+.langsel{background:rgba(255,255,255,.2);border:1.5px solid rgba(255,255,255,.5);color:#fff;border-radius:999px;padding:8px 10px;min-height:44px;font-size:.85rem;max-width:118px;flex-shrink:0}
+.langsel option{color:#111}
+.badges{display:flex;flex-wrap:wrap;gap:8px;max-width:960px;margin:14px auto 0;position:relative;z-index:1}
+.badges span{background:rgba(255,255,255,.22);border-radius:999px;padding:5px 12px;font-size:.8rem;font-weight:600}
+.searchbox{max-width:960px;margin:-30px auto 0;padding:0 16px;position:relative;z-index:2}
+.searchbox input{width:100%;border:0;border-radius:18px;padding:16px 18px 16px 50px;font-size:1rem;background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' fill='none' stroke='%237c3aed' stroke-width='2.5' stroke-linecap='round'%3E%3Ccircle cx='10' cy='10' r='7'/%3E%3Cpath d='m20 20-4.5-4.5'/%3E%3C/svg%3E") no-repeat 16px center;box-shadow:0 10px 30px rgba(76,29,149,.18)}
+[dir=rtl] .searchbox input{padding:16px 50px 16px 18px;background-position:calc(100% - 16px) center}
+.chips{display:flex;gap:10px;overflow-x:auto;padding:16px;max-width:960px;margin:0 auto;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex-shrink:0;border:0;border-radius:999px;padding:10px 18px;min-height:44px;font-weight:700;font-size:.92rem;cursor:pointer;background:#fff;color:var(--ink);box-shadow:0 2px 8px rgba(30,27,46,.08)}
+.chip[aria-pressed=true]{color:#fff;background:var(--c,var(--violet));box-shadow:0 6px 16px rgba(124,58,237,.3)}
+main{max-width:960px;margin:0 auto;padding:0 16px}
+.notice{background:#fff1f2;border:2px solid #fecdd3;color:#9f1239;border-radius:16px;padding:14px 16px;margin:8px 0 14px;font-weight:600}
+h2{font:800 1.25rem "Baloo 2",sans-serif;margin:18px 4px 10px;display:flex;align-items:center;gap:8px}
+h2:before{content:"";width:10px;height:22px;border-radius:6px;background:var(--c,var(--violet))}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+@media(min-width:640px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(min-width:900px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.card{background:var(--card);border-radius:var(--radius);overflow:hidden;display:flex;flex-direction:column;box-shadow:0 4px 14px rgba(30,27,46,.07);border:0;padding:0;text-align:start;cursor:pointer;position:relative}
+.card .ph{aspect-ratio:1;background:var(--c,#ede9fe);display:grid;place-items:center;font:800 2.6rem "Baloo 2",sans-serif;color:#fff;position:relative}
+.card .ph img{width:100%;height:100%;object-fit:cover;display:block}
+.card .body{padding:10px 12px 12px;display:flex;flex-direction:column;gap:4px;flex:1}
+.card .name{font-weight:700;font-size:.98rem;line-height:1.25}
+.card .from{font-size:.78rem;color:var(--muted)}
+.card .row{flex-wrap:wrap;display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:auto;padding-top:6px}
+.price{font:800 1.15rem "Baloo 2",sans-serif;color:var(--violet)}
+.unit{font:500 .78rem "Noto Sans",sans-serif;color:var(--muted)}
+.add{white-space:nowrap;border:0;border-radius:14px;background:var(--green);color:#fff;font-weight:800;min-width:48px;min-height:44px;padding:0 14px;cursor:pointer;font-size:.95rem;box-shadow:0 4px 10px rgba(22,163,74,.3)}
+.add:active{transform:scale(.96)}
+.qty{display:flex;align-items:center;background:#f0fdf4;border-radius:14px;border:2px solid var(--green)}
+.qty button{border:0;background:none;width:40px;height:40px;font-size:1.3rem;font-weight:800;color:var(--green-d);cursor:pointer}
+.qty span{min-width:22px;text-align:center;font-weight:800}
+.out{position:absolute;top:10px;inset-inline-start:10px;background:#111827cc;color:#fff;font-size:.75rem;font-weight:700;padding:4px 10px;border-radius:999px}
+.incart{position:absolute;top:10px;inset-inline-end:10px;background:var(--green);color:#fff;font-size:.8rem;font-weight:800;min-width:28px;height:28px;border-radius:999px;display:grid;place-items:center;padding:0 8px}
+.empty{text-align:center;color:var(--muted);padding:40px 10px}
+.bar{position:fixed;left:0;right:0;bottom:0;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:linear-gradient(180deg,rgba(250,247,255,0),var(--bg) 35%);z-index:20;pointer-events:none}
+.bar button{pointer-events:auto;width:100%;max-width:600px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;border:0;border-radius:20px;padding:16px 20px;min-height:60px;background:linear-gradient(135deg,#16a34a,#059669);color:#fff;font-weight:800;font-size:1.05rem;cursor:pointer;box-shadow:0 10px 24px rgba(5,150,105,.35)}
+.bar .count{background:#fff;color:var(--green-d);border-radius:999px;padding:2px 10px;margin-inline-end:8px}
+.sheet{position:fixed;inset:0;z-index:30;display:none}
+.sheet.open{display:block}
+.sheet .shade{position:absolute;inset:0;background:rgba(17,12,34,.55)}
+.sheet .panel{position:absolute;left:0;right:0;bottom:0;max-height:92vh;overflow-y:auto;background:#fff;border-radius:26px 26px 0 0;padding:0 0 calc(20px + env(safe-area-inset-bottom));max-width:640px;margin:0 auto;animation:up .22s ease-out}
+@keyframes up{from{transform:translateY(40px);opacity:.4}to{transform:none;opacity:1}}
+@media (prefers-reduced-motion:reduce){.sheet .panel{animation:none}}
+.shead{position:sticky;top:0;z-index:3;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px 10px 20px;background:#fff;border-bottom:1px solid var(--line)}
+.shead b{font:800 1.1rem "Baloo 2",sans-serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.close{width:44px;height:44px;border-radius:50%;border:0;background:#f3f0fa;font-size:1.2rem;cursor:pointer;flex-shrink:0}
+.gallery{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none}
+.gallery::-webkit-scrollbar{display:none}
+.gallery img,.gallery .ph{flex:0 0 100%;width:100%;height:min(100vw,52vh,640px);object-fit:cover;scroll-snap-align:center}
+.gallery .ph{display:grid;place-items:center;font:800 4rem "Baloo 2",sans-serif;color:#fff;background:var(--c,var(--violet))}
+.dots{display:flex;justify-content:center;gap:6px;margin-top:-22px;position:relative}
+.dots i{width:8px;height:8px;border-radius:50%;background:#fff;opacity:.6;box-shadow:0 0 3px rgba(0,0,0,.4)}
+.dots i.on{opacity:1;width:20px;border-radius:6px}
+.pad{padding:16px 20px}
+.pad h3{font:800 1.5rem/1.15 "Baloo 2",sans-serif;margin:4px 0 6px}
+.desc{color:var(--muted);line-height:1.55;margin:8px 0 0;white-space:pre-line}
+.label{font-weight:700;margin:18px 0 8px;font-size:.95rem}
+.sizes{display:flex;flex-wrap:wrap;gap:10px}
+.size{border:2px solid var(--line);background:#fff;border-radius:14px;padding:10px 16px;min-height:48px;cursor:pointer;font-weight:700;display:flex;flex-direction:column;align-items:flex-start;gap:2px}
+.size small{font-weight:600;color:var(--violet)}
+.size[aria-pressed=true]{border-color:var(--violet);background:#f5f0ff;box-shadow:0 0 0 2px var(--violet) inset}
+.size:disabled{opacity:.45;text-decoration:line-through;cursor:not-allowed}
+table.nut{width:100%;border-collapse:collapse;font-size:.92rem;border-radius:14px;overflow:hidden;background:#fffbeb}
+table.nut td{padding:9px 12px;border-bottom:1px solid #fde68a}
+table.nut td:last-child{text-align:end;font-weight:700}
+.buy{display:flex;gap:12px;align-items:center;margin-top:20px}
+.buy .qty{flex-shrink:0}
+.buy .qty button{width:48px;height:52px}
+.big{flex:1;border:0;border-radius:18px;min-height:56px;padding:0 18px;font-weight:800;font-size:1.05rem;cursor:pointer;color:#fff;background:linear-gradient(135deg,#7c3aed,#db2777)}
+.big.green{background:linear-gradient(135deg,#16a34a,#059669)}
+.big:disabled{opacity:.5;cursor:not-allowed}
+.line{display:flex;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
+.line img,.line .ph{width:56px;height:56px;border-radius:14px;object-fit:cover;flex-shrink:0;display:grid;place-items:center;color:#fff;font-weight:800;background:var(--c,var(--violet))}
+.line .info{flex:1;min-width:0}
+.line .info b{display:block;font-size:.95rem}
+.line .info span{color:var(--muted);font-size:.85rem}
+.totals{margin:14px 0;display:grid;gap:6px}
+.totals div{display:flex;justify-content:space-between}
+.totals .grand{font:800 1.3rem "Baloo 2",sans-serif;color:var(--violet);border-top:2px dashed var(--line);padding-top:8px}
+.hint{background:#fff7ed;color:#9a3412;border-radius:12px;padding:10px 12px;font-size:.88rem;font-weight:600;margin:6px 0}
+form label{display:block;font-weight:700;font-size:.92rem;margin:14px 0 6px}
+form input,form textarea{width:100%;border:2px solid var(--line);border-radius:14px;padding:13px 14px;font-size:1rem;background:#fff}
+form input:focus,form textarea:focus{border-color:var(--violet);outline:none;box-shadow:0 0 0 4px #ede9fe}
+.pay{display:grid;gap:10px;margin-top:8px}
+.pay label{display:flex;align-items:center;gap:12px;border:2px solid var(--line);border-radius:14px;padding:14px;margin:0;cursor:pointer;font-weight:700}
+.pay input{width:22px;height:22px;accent-color:var(--violet)}
+.pay label:has(input:checked){border-color:var(--violet);background:#f5f0ff}
+.err{color:#b91c1c;font-weight:700;margin:10px 0 0;min-height:1.2em}
+.done{text-align:center;padding:30px 20px}
+.done .big-emoji{font-size:4rem}
+.done a{display:inline-flex;align-items:center;justify-content:center;margin-top:18px;text-decoration:none}
+footer{text-align:center;color:var(--muted);font-size:.78rem;padding:28px 16px}
 </style></head>
 <body>
 <header>
-  <h1>{escape(business.name)}</h1>
-  <p>{escape(business.address or "")}</p>
-  <div class="notices">{notice_html}</div>
-  {chat_button}
+ <div class="top">
+  <div class="brand"><div class="logo" aria-hidden="true" id="logo"></div><div><h1 id="shopName"></h1><p class="addr" id="shopAddr"></p></div></div>
+  <label class="sr" for="lang">Language</label><select id="lang" class="langsel"></select>
+ </div>
+ <div class="badges" id="badges"></div>
 </header>
-<main>{body}</main>
-<footer>Orders and payments on WhatsApp · powered by RIRAONE</footer>
+<div class="searchbox"><label class="sr" for="q"></label><input id="q" type="search" autocomplete="off"></div>
+<nav class="chips" id="chips" aria-label="Categories"></nav>
+<main id="main"></main>
+<footer>🔒 Secure checkout · powered by RIRAONE</footer>
+<div class="bar" id="bar" hidden><button id="cartBtn" type="button"><span><span class="count" id="cartCount">0</span><span id="cartLabel"></span></span><span id="cartTotal"></span></button></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true"><div class="shade" data-close></div><div class="panel" id="panel"></div></div>
+<script id="data" type="application/json">__DATA__</script>
+<script>
+const D = JSON.parse(document.getElementById("data").textContent);
+const T = D.texts, R = D.rules;
+const COLORS = ["#7c3aed","#db2777","#f97316","#0891b2","#16a34a","#ca8a04","#4f46e5","#e11d48","#0d9488","#9333ea"];
+const KEY = "rira-cart-" + D.shop.id;
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const money = (n) => "₹" + (Math.round(n * 100) / 100).toLocaleString("en-IN");
+const byId = Object.fromEntries(D.products.map((p) => [p.id, p]));
+const cats = [...new Set(D.products.map((p) => p.category).filter(Boolean))];
+const catColor = (c) => COLORS[(cats.indexOf(c) + COLORS.length) % COLORS.length];
+const prodColor = (p) => p.category ? catColor(p.category) : COLORS[p.id % COLORS.length];
+let cart = [];
+try { cart = JSON.parse(localStorage.getItem(KEY) || "[]"); } catch (e) {}
+if (D.prefill.length) cart = D.prefill.filter((i) => byId[i.product_id]);
+cart = cart.filter((i) => byId[i.product_id]);
+let activeCat = "", query = "";
+
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(cart)); } catch (e) {} };
+const variantOf = (p, vid) => p.variants.find((v) => v.id === vid);
+const unitPrice = (i) => { const p = byId[i.product_id]; const v = variantOf(p, i.variant_id); return v ? v.price : p.price; };
+const stockOf = (p, vid) => { const v = variantOf(p, vid); return v ? v.stock : p.stock; };
+const qtyIn = (pid, vid) => cart.filter((i) => i.product_id === pid && (vid === undefined || i.variant_id === vid)).reduce((a, i) => a + i.quantity, 0);
+const subtotal = () => cart.reduce((a, i) => a + unitPrice(i) * i.quantity, 0);
+const deliveryFee = (s) => (!R.delivery_fee || (R.free_above && s >= R.free_above)) ? 0 : R.delivery_fee;
+
+function setQty(pid, vid, q) {
+  const p = byId[pid]; q = Math.max(0, Math.min(q, stockOf(p, vid), 99));
+  const line = cart.find((i) => i.product_id === pid && i.variant_id === vid);
+  if (line) line.quantity = q; else if (q > 0) cart.push({ product_id: pid, variant_id: vid, quantity: q });
+  cart = cart.filter((i) => i.quantity > 0); save(); renderGrid(); renderBar();
+}
+
+function header() {
+  document.title = D.shop.name;
+  $("#shopName").textContent = D.shop.name; $("#shopAddr").textContent = D.shop.address;
+  $("#logo").textContent = (D.shop.name.trim()[0] || "S").toUpperCase();
+  $("#lang").innerHTML = D.languages.map(([c, n]) => `<option value="${c}" ${c === D.lang ? "selected" : ""}>${esc(n)}</option>`).join("");
+  $("#lang").onchange = (e) => { const u = new URL(location.href); u.searchParams.set("lang", e.target.value); u.searchParams.delete("add"); location.href = u; };
+  const b = [];
+  if (R.free_above && R.delivery_fee) b.push("🚚 " + T.free_above.replace("{amount}", R.free_above));
+  else if (!R.delivery_fee) b.push("🚚 " + T.delivery + ": " + T.free);
+  if (R.min_order) b.push("🧺 " + T.min_order.replace("{amount}", R.min_order));
+  if (R.cod) b.push("💵 " + T.cod);
+  $("#badges").innerHTML = b.map((x) => `<span>${esc(x)}</span>`).join("");
+  $("#q").placeholder = T.search; $("label[for=q]").textContent = T.search;
+  $("#q").oninput = (e) => { query = e.target.value.trim().toLowerCase(); renderGrid(); };
+  $("#cartLabel").textContent = T.view_cart;
+  $("#cartBtn").onclick = openCart;
+}
+
+function renderChips() {
+  if (!cats.length) { $("#chips").hidden = true; return; }
+  const all = [["", T.all, "#7c3aed"], ...cats.map((c) => [c, c, catColor(c)])];
+  $("#chips").innerHTML = all.map(([v, l, c]) => `<button class="chip" style="--c:${c}" aria-pressed="${v === activeCat}" data-cat="${esc(v)}">${esc(l)}</button>`).join("");
+  $("#chips").querySelectorAll("[data-cat]").forEach((b) => b.onclick = () => { activeCat = b.dataset.cat; renderChips(); renderGrid(); });
+}
+
+function card(p) {
+  const n = qtyIn(p.id), avail = p.stock > 0;
+  const multi = p.variants.length > 1;
+  const single = p.variants.length === 1 ? p.variants[0].id : null;
+  let control;
+  if (!avail) control = "";
+  else if (!multi && n > 0) control = `<div class="qty" role="group" aria-label="${esc(p.name)}"><button data-dec="${p.id}" aria-label="−">−</button><span aria-live="polite">${n}</span><button data-inc="${p.id}" aria-label="+">+</button></div>`;
+  else control = `<button class="add" data-add="${p.id}" aria-label="${esc(T.add + " " + p.name)}">${multi ? T.add + " ▾" : "+ " + T.add}</button>`;
+  return `<article class="card" data-open="${p.id}" tabindex="0" aria-label="${esc(p.name)}">
+   <div class="ph" style="--c:${prodColor(p)}">${p.images.length ? `<img src="${esc(p.images[0])}" alt="" loading="lazy">` : esc(p.name.trim()[0] || "?")}
+   ${avail ? "" : `<span class="out">${esc(T.sold_out)}</span>`}${n ? `<span class="incart">${n}</span>` : ""}</div>
+   <div class="body"><div class="name">${esc(p.name)}</div>
+   ${multi ? `<div class="from">${p.variants.map((v) => esc(v.label)).join(" · ")}</div>` : ""}
+   <div class="row"><div><span class="price">${money(p.variants.length ? Math.min(...p.variants.map((v) => v.price)) : p.price)}</span>${!p.variants.length && p.unit ? ` <span class="unit">/ ${esc(p.unit)}</span>` : ""}</div>${control}</div></div></article>`;
+}
+
+function renderGrid() {
+  const main = $("#main");
+  if (!D.products.length) { main.innerHTML = `<p class="empty">${esc(T.no_products)}</p>`; return; }
+  const list = D.products.filter((p) => (!activeCat || p.category === activeCat) &&
+    (!query || (p.name + " " + p.description + " " + p.category).toLowerCase().includes(query)));
+  const groups = {};
+  list.forEach((p) => (groups[p.category] ||= []).push(p));
+  let html = R.open ? "" : `<div class="notice">⏸️ ${esc(R.closed_message)}</div>`;
+  for (const [c, ps] of Object.entries(groups))
+    html += (c && !activeCat ? `<h2 style="--c:${catColor(c)}">${esc(c)}</h2>` : "") + `<div class="grid">${ps.map(card).join("")}</div>`;
+  main.innerHTML = list.length ? html : `<p class="empty">🔍 ${esc(query)}</p>`;
+  main.querySelectorAll("[data-open]").forEach((el) => {
+    el.onclick = (e) => { if (!e.target.closest("button")) openProduct(+el.dataset.open); };
+    el.onkeydown = (e) => { if (e.key === "Enter" && e.target === el) openProduct(+el.dataset.open); };
+  });
+  main.querySelectorAll("[data-add]").forEach((b) => b.onclick = () => {
+    const p = byId[+b.dataset.add];
+    if (p.variants.length > 1) return openProduct(p.id);
+    const vid = p.variants.length ? p.variants[0].id : null;
+    setQty(p.id, vid, qtyIn(p.id, vid) + 1);
+  });
+  main.querySelectorAll("[data-inc],[data-dec]").forEach((b) => b.onclick = () => {
+    const p = byId[+(b.dataset.inc || b.dataset.dec)], vid = p.variants.length ? p.variants[0].id : null;
+    setQty(p.id, vid, qtyIn(p.id, vid) + (b.dataset.inc ? 1 : -1));
+  });
+}
+
+function renderBar() {
+  const n = cart.reduce((a, i) => a + i.quantity, 0);
+  $("#bar").hidden = n === 0 || !R.open;
+  $("#cartCount").textContent = n; $("#cartTotal").textContent = money(subtotal()) + " →";
+}
+
+let lastFocus = null;
+function openSheet(html, title = "") {
+  lastFocus = document.activeElement;
+  $("#panel").innerHTML = `<div class="shead"><b>${esc(title)}</b><button class="close" data-close aria-label="${esc(T.close)}">✕</button></div>` + html;
+  $("#sheet").classList.add("open"); document.body.style.overflow = "hidden";
+  $("#panel").querySelectorAll("[data-close]").forEach((b) => b.onclick = closeSheet);
+  setTimeout(() => $("#panel .close").focus(), 30);
+}
+function closeSheet() { $("#sheet").classList.remove("open"); document.body.style.overflow = ""; lastFocus && lastFocus.focus(); }
+$("#sheet .shade").onclick = closeSheet;
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("#sheet").classList.contains("open")) closeSheet(); });
+
+function openProduct(pid) {
+  const p = byId[pid];
+  let vid = p.variants.length ? (p.variants.find((v) => v.stock > 0) || p.variants[0]).id : null;
+  let q = 1;
+  const imgs = p.images.length ? p.images.map((u, i) => `<img src="${esc(u)}" alt="${esc(p.name)} ${i + 1}">`).join("")
+    : `<div class="ph" style="--c:${prodColor(p)}">${esc(p.name.trim()[0] || "?")}</div>`;
+  const draw = () => {
+    const price = vid ? variantOf(p, vid).price : p.price, st = stockOf(p, vid);
+    openSheet(`<div class="gallery" id="gal">${imgs}</div>
+     ${p.images.length > 1 ? `<div class="dots" id="dots">${p.images.map((_, i) => `<i class="${i ? "" : "on"}"></i>`).join("")}</div>` : ""}
+     <div class="pad"><h3>${esc(p.name)}</h3>
+      <div><span class="price" style="font-size:1.5rem">${money(price)}</span>${!p.variants.length && p.unit ? ` <span class="unit">/ ${esc(p.unit)}</span>` : ""}</div>
+      ${p.description ? `<p class="desc">${esc(p.description)}</p>` : ""}
+      ${p.variants.length ? `<div class="label">${esc(T.choose_size)}</div><div class="sizes" role="group">${p.variants.map((v) =>
+        `<button class="size" data-v="${v.id}" aria-pressed="${v.id === vid}" ${v.stock > 0 ? "" : "disabled"}>${esc(v.label)}<small>${money(v.price)}</small></button>`).join("")}</div>` : ""}
+      ${p.nutrition.length ? `<div class="label">🥗 ${esc(T.nutrition)}</div><table class="nut">${p.nutrition.map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join("")}</table>` : ""}
+      ${R.open ? `<div class="buy">${st > 0 ? `<div class="qty"><button data-q="-1" aria-label="−">−</button><span aria-live="polite">${q}</span><button data-q="1" aria-label="+">+</button></div>` : ""}
+      <button class="big green" id="addBtn" ${st > 0 ? "" : "disabled"}>${st > 0 ? "🛒 " + esc(T.add) + " · " + money(price * q) : esc(T.sold_out)}</button></div>` : ""}
+     </div>`, p.name);
+    $("#panel").querySelectorAll("[data-v]").forEach((b) => b.onclick = () => { vid = +b.dataset.v; q = 1; draw(); });
+    $("#panel").querySelectorAll("[data-q]").forEach((b) => b.onclick = () => { q = Math.max(1, Math.min(q + +b.dataset.q, st, 99)); draw(); });
+    const add = $("#addBtn");
+    if (add) add.onclick = () => { setQty(p.id, vid, qtyIn(p.id, vid) + q); closeSheet(); };
+    const gal = $("#gal"), dots = $("#dots");
+    if (gal && dots) gal.onscroll = () => { const i = Math.round(gal.scrollLeft / gal.clientWidth); dots.querySelectorAll("i").forEach((d, j) => d.className = Math.abs(i) === j ? "on" : ""); };
+  };
+  draw();
+}
+
+function openCart() {
+  if (!cart.length) return;
+  const s = subtotal(), fee = deliveryFee(s), short = R.min_order && s < R.min_order;
+  const lines = cart.map((i) => { const p = byId[i.product_id], v = variantOf(p, i.variant_id);
+    return `<div class="line">${p.images.length ? `<img src="${esc(p.images[0])}" alt="">` : `<div class="ph" style="--c:${prodColor(p)}">${esc(p.name[0])}</div>`}
+     <div class="info"><b>${esc(p.name)}${v && p.variants.length > 1 ? " · " + esc(v.label) : ""}</b><span>${money(unitPrice(i))} × ${i.quantity} = ${money(unitPrice(i) * i.quantity)}</span></div>
+     <div class="qty"><button data-l="${i.product_id}:${i.variant_id}" data-d="-1" aria-label="−">−</button><span>${i.quantity}</span><button data-l="${i.product_id}:${i.variant_id}" data-d="1" aria-label="+">+</button></div></div>`; }).join("");
+  const c = D.customer;
+  openSheet(`<div class="pad">${lines}
+   <div class="totals"><div><span>${esc(T.subtotal)}</span><b>${money(s)}</b></div>
+   <div><span>${esc(T.delivery)}</span><b>${fee ? money(fee) : esc(T.free)}</b></div>
+   <div class="grand"><span>${esc(T.total)}</span><span>${money(s + fee)}</span></div></div>
+   ${short ? `<div class="hint">🧺 ${esc(T.min_order.replace("{amount}", R.min_order))}</div>` : ""}
+   ${R.free_above && fee ? `<div class="hint">🚚 ${esc(T.free_above.replace("{amount}", R.free_above))}</div>` : ""}
+   <form id="co" novalidate>
+    <label for="f-name">${esc(T.name)}</label><input id="f-name" name="name" autocomplete="name" required value="${esc(c.name)}">
+    ${D.token ? "" : `<label for="f-phone">${esc(T.phone)}</label><input id="f-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" required placeholder="+91 98765 43210">`}
+    <label for="f-addr">${esc(T.address)}</label><textarea id="f-addr" name="address" rows="3" autocomplete="street-address" required>${esc(c.address)}</textarea>
+    <label for="f-note">${esc(T.note)}</label><input id="f-note" name="note">
+    <div class="pay" role="radiogroup"><label><input type="radio" name="pm" value="online" checked> 💳 ${esc(T.pay_online)}</label>
+    ${R.cod ? `<label><input type="radio" name="pm" value="cod"> 💵 ${esc(T.cod)}</label>` : ""}</div>
+    <p class="err" id="err" role="alert"></p>
+    <button class="big" id="placeBtn" type="submit" ${short ? "disabled" : ""}>✅ ${esc(T.place_order)} · ${money(s + fee)}</button>
+   </form></div>`, "🛒 " + T.cart);
+  $("#panel").querySelectorAll("[data-l]").forEach((b) => b.onclick = () => {
+    const [pid, vid] = b.dataset.l.split(":"); const v = vid === "null" ? null : +vid;
+    setQty(+pid, v, qtyIn(+pid, v) + +b.dataset.d); cart.length ? openCart() : closeSheet();
+  });
+  $("#co").onsubmit = submit;
+}
+
+async function submit(e) {
+  e.preventDefault();
+  const f = e.target.elements, btn = $("#placeBtn"), err = $("#err");
+  err.textContent = "";
+  const body = { items: cart, name: f.name.value.trim(), address: f.address.value.trim(), note: f.note.value.trim(),
+    phone: f.phone ? f.phone.value : null, c: D.token, payment_method: f.pm.value, lang: D.lang };
+  if (!body.name) { err.textContent = T.name; f.name.focus(); return; }
+  if (f.phone && f.phone.value.replace(/\D/g, "").length < 10) { err.textContent = T.phone; f.phone.focus(); return; }
+  if (body.address.length < 8) { err.textContent = T.address; f.address.focus(); return; }
+  btn.disabled = true; btn.textContent = "⏳ …";
+  try {
+    const res = await fetch(`/shop/${D.shop.id}/checkout`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const out = await res.json();
+    if (!res.ok) throw new Error(typeof out.detail === "string" ? out.detail : T.error);
+    cart = []; save(); renderGrid(); renderBar();
+    if (out.redirect) { location.href = out.redirect; return; }
+    openSheet(`<div class="done"><div class="big-emoji">🎉</div><h3>${esc(T.order_placed)}</h3><p class="desc">#${out.order_id} · ${esc(out.message)}</p>
+      ${D.whatsapp ? `<a class="big green" href="${esc(D.whatsapp)}">💬 ${esc(T.back_to_whatsapp)}</a>` : ""}</div>`);
+  } catch (x) {
+    err.textContent = x.message || T.error; btn.disabled = false; btn.textContent = "✅ " + T.place_order;
+  }
+}
+
+header(); renderChips(); renderGrid(); renderBar();
+if (D.prefill.length && cart.length && R.open) openCart();
+</script>
 </body></html>"""
-    return HTMLResponse(html)

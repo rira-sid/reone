@@ -49,7 +49,7 @@ def stats(db: Session = Depends(get_db), business: models.Business = Depends(cur
     for o, d in dated:
         if (today - d).days < 30 and o.is_paid:
             for item in o.items:
-                entry = sold[item.product.name]
+                entry = sold[item.display_name]
                 entry["quantity"] += item.quantity
                 entry["revenue"] += item.quantity * item.price_at_order
     top_products = sorted(

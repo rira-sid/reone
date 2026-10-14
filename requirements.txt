@@ -8,5 +8,4 @@ sqlalchemy
 razorpay
 cryptography
 psycopg2-binary
-av
 qrcode

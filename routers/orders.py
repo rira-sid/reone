@@ -36,7 +36,8 @@ def _serialize_order(order: models.Order) -> dict:
             {
                 "id": item.id,
                 "product_id": item.product_id,
-                "product_name": item.product.name,
+                "product_name": item.display_name,
+                "variant_id": item.variant_id,
                 "quantity": item.quantity,
                 "price_at_order": item.price_at_order,
             }
@@ -65,14 +66,21 @@ def delivery_fee_for(business: models.Business, subtotal: float) -> float:
     return business.delivery_fee
 
 
+def _stock_holders(db: Session, item: models.OrderItem) -> list:
+    """Sizes keep their own stock; the product's stock is the total over its sizes."""
+    holders = [db.get(models.Product, item.product_id)]
+    if item.variant_id:
+        holders.append(db.get(models.ProductVariant, item.variant_id))
+    return [h for h in holders if h is not None]
+
+
 def reserve_stock(db: Session, order: models.Order):
     """Take the order's items out of stock (once)."""
     if order.stock_deducted:
         return
     for item in order.items:
-        product = db.get(models.Product, item.product_id)
-        if product:
-            product.stock = max(0, product.stock - item.quantity)
+        for holder in _stock_holders(db, item):
+            holder.stock = max(0, holder.stock - item.quantity)
     order.stock_deducted = True
 
 
@@ -81,9 +89,8 @@ def release_stock(db: Session, order: models.Order):
     if not order.stock_deducted:
         return
     for item in order.items:
-        product = db.get(models.Product, item.product_id)
-        if product:
-            product.stock += item.quantity
+        for holder in _stock_holders(db, item):
+            holder.stock += item.quantity
     order.stock_deducted = False
 
 
@@ -104,6 +111,7 @@ def place_order(
     items: list[schemas.OrderItemCreate],
     payment_method: str = "online",
     customer_note: str | None = None,
+    check_stock: bool = False,
 ) -> models.Order:
     """Create an order (and its line items) for an already-added customer. Caller commits.
     Raises HTTPException(400) if the order breaks the shop's rules."""
@@ -128,11 +136,27 @@ def place_order(
             raise HTTPException(status_code=404, detail=f"Product {item.product_id} not found")
         if item.quantity <= 0:
             raise HTTPException(status_code=400, detail="Quantity must be at least 1")
-        subtotal += product.price * item.quantity
+        variant = None
+        variants = product.active_variants
+        if variants:
+            variant = next((v for v in variants if v.id == item.variant_id), None)
+            if variant is None:
+                if len(variants) > 1:
+                    raise HTTPException(status_code=400, detail=f"Please choose a size for {product.name}")
+                variant = variants[0]
+        price = variant.price if variant else product.price
+        if check_stock:
+            available = variant.stock if variant else product.stock
+            if available < item.quantity:
+                label = f"{product.name} ({variant.label})" if variant else product.name
+                raise HTTPException(status_code=409, detail=f"Only {available} of {label} left")
+        subtotal += price * item.quantity
         order.items.append(models.OrderItem(
             product_id=product.id,
             quantity=item.quantity,
-            price_at_order=product.price,
+            price_at_order=price,
+            variant_id=variant.id if variant else None,
+            variant_label=variant.label if variant else None,
         ))
 
     if business.min_order_amount and subtotal < business.min_order_amount:
@@ -250,7 +274,7 @@ def export_orders(db: Session = Depends(get_db), business: models.Business = Dep
         writer.writerow([
             o.id, o.created_at.strftime("%Y-%m-%d %H:%M") if o.created_at else "",
             o.customer.name, o.customer.phone, o.customer.address or "",
-            "; ".join(f"{i.quantity} x {i.product.name} @ {i.price_at_order:g}" for i in o.items),
+            "; ".join(f"{i.quantity} x {i.display_name} @ {i.price_at_order:g}" for i in o.items),
             f"{o.total_amount - (o.delivery_fee or 0):.2f}", f"{o.delivery_fee or 0:.2f}", f"{o.total_amount:.2f}",
             "Cash on delivery" if o.payment_method == "cod" else "Online", "Yes" if o.is_paid else "No",
             o.paid_at.strftime("%Y-%m-%d %H:%M") if o.paid_at else "", o.status, o.tracking_info or "",

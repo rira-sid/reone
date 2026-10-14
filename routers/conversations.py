@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
@@ -22,6 +22,7 @@ class ConversationOut(BaseModel):
     customer_name: str | None
     language: str | None
     ai_paused: bool
+    needs_seller: bool
     updated_at: datetime | None
     # False once 24h have passed since the customer's last message - WhatsApp then rejects
     # free-form replies until the customer writes again.
@@ -63,6 +64,7 @@ def _conversation_out(conversation: models.Conversation) -> dict:
         "customer_name": conversation.customer_name,
         "language": conversation.language,
         "ai_paused": conversation.ai_paused,
+        "needs_seller": conversation.needs_seller,
         "updated_at": conversation.updated_at,
         "reply_window_open": within_service_window(conversation),
     }
@@ -102,6 +104,9 @@ def list_messages(conversation_id: int, db: Session = Depends(get_db), business:
 def set_takeover(conversation_id: int, payload: TakeoverUpdate, db: Session = Depends(get_db), business: models.Business = Depends(current_business)):
     conversation = _get_conversation(db, business, conversation_id)
     conversation.ai_paused = payload.ai_paused
+    if not payload.ai_paused:
+        conversation.needs_seller = False  # handing back to the assistant also closes the question
+        conversation.seller_alert_stage = 0
     db.commit()
     db.refresh(conversation)
     return _conversation_out(conversation)
@@ -116,8 +121,10 @@ async def seller_reply(conversation_id: int, payload: SellerReply, db: Session =
         await send_message(whatsapp_creds(business), conversation.phone, payload.text)
     except WhatsAppSendError as e:
         raise HTTPException(status_code=502, detail=str(e))
-    # A seller typing into the chat implies they're handling it - keep the AI out of the way.
-    conversation.ai_paused = True
+    # The question is answered; small talk for the next 30 min still goes to the seller (chatbot.py).
+    conversation.needs_seller = False
+    conversation.seller_alert_stage = 0
+    conversation.last_seller_reply_at = datetime.now(timezone.utc)
     message = models.Message(conversation_id=conversation.id, sender="seller", text=payload.text)
     db.add(message)
     db.commit()

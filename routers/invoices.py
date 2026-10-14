@@ -58,7 +58,7 @@ def view_invoice(order_id: int, t: str = "", db: Session = Depends(get_db)):
     seller_lines = [escape(x) for x in (b.address, f"Phone: {b.phone}" if b.phone else None,
                                          f"GSTIN: {b.gstin}" if b.gstin else None) if x]
     rows = "".join(
-        f"<tr><td>{escape(i.product.name)}</td><td class='num'>{i.quantity}</td>"
+        f"<tr><td>{escape(i.display_name)}</td><td class='num'>{i.quantity}</td>"
         f"<td class='num'>{_money(i.price_at_order)}</td><td class='num'>{_money(i.price_at_order * i.quantity)}</td></tr>"
         for i in order.items
     )

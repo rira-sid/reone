@@ -132,15 +132,32 @@ async def razorpay_webhook(business_id: int, request: Request, db: Session = Dep
 
 
 async def notify_payment_received(business: models.Business, order: models.Order):
-    """Thank the customer once a payment is confirmed automatically (Razorpay link or WhatsApp Pay).
-    They just paid from a link/card in the chat, so we're inside WhatsApp's 24h window."""
-    try:
-        await send_message(
-            whatsapp_creds(business),
-            order.customer.phone,
-            f"Payment received for Order #{order.id} (₹{order.total_amount:g}). Thank you! "
-            f"We'll let you know when it ships.\nInvoice: {invoice_url(order.id)}",
-        )
-    except WhatsAppSendError as e:
-        # Payment is already recorded - a failed confirmation message shouldn't fail the webhook.
-        print("PAYMENT CONFIRMATION NOT DELIVERED:", e)
+    """Thank the customer once a payment is confirmed automatically, with the invoice, and give the
+    seller a heads-up to pack it. Outside the 24h window (e.g. ordered from a shared shop link) the
+    approved order_update template is used instead."""
+    from database import SessionLocal
+    from notifications import notify_order_update, within_service_window
+    from seller_alerts import notify_seller
+
+    with SessionLocal() as db:
+        order = db.get(models.Order, order.id)
+        business = db.get(models.Business, business.id)
+        conversation = db.query(models.Conversation).filter(
+            models.Conversation.business_id == business.id, models.Conversation.phone == order.customer.phone
+        ).first()
+        text = (f"✅ Payment received for Order #{order.id} (₹{order.total_amount:g}). Thank you! "
+                f"We'll let you know when it ships.\n🧾 Invoice: {invoice_url(order.id)}")
+        if within_service_window(conversation):
+            try:
+                await send_message(whatsapp_creds(business), order.customer.phone, text)
+                db.add(models.Message(conversation_id=conversation.id, sender="system", text=text))
+                db.commit()
+            except WhatsAppSendError as e:
+                # Payment is already recorded - a failed confirmation message shouldn't fail the webhook.
+                print("PAYMENT CONFIRMATION NOT DELIVERED:", e)
+        else:
+            await notify_order_update(db, business, order,
+                                      f"Payment received, thank you! Invoice: {invoice_url(order.id)}")
+        items = ", ".join(f"{i.quantity} × {i.display_name}" for i in order.items)
+        await notify_seller(db, business, f"💰 Order #{order.id} PAID ₹{order.total_amount:g} - {order.customer.name}: "
+                                          f"{items}. Ready to pack 📦")

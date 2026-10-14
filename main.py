@@ -148,7 +148,8 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
                     continue
 
                 msg_type = msg.get("type")
-                image_media_id = audio_media_id = None
+                image_media_id = audio_media_id = interactive_id = None
+                context_id = (msg.get("context") or {}).get("id")  # set when they swipe-reply to a message
                 if msg_type == "text":
                     text = msg["text"]["body"]
                 elif msg_type == "image":
@@ -160,6 +161,10 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
                     text = "[voice note]"
                 elif msg_type == "button":
                     text = msg["button"].get("text", "")
+                elif msg_type == "interactive":
+                    reply = msg["interactive"].get("list_reply") or msg["interactive"].get("button_reply") or {}
+                    interactive_id = reply.get("id")
+                    text = reply.get("title") or "[menu choice]"
                 else:
                     text = _PLACEHOLDERS.get(msg_type, f"[{msg_type or 'unsupported'} message]")
                 print(f"Message for business {business.id} from {from_number}: {text}")
@@ -168,7 +173,7 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
                 # and resend the same message, which is what caused the duplicate-reply bug.
                 background_tasks.add_task(
                     handle_incoming, business.id, from_number, text, profile_name, image_media_id, message_id,
-                    audio_media_id,
+                    audio_media_id, interactive_id, context_id,
                 )
 
     return {"status": "ok"}

@@ -26,3 +26,17 @@ Until it's approved, updates outside the 24-hour window just fail quietly (logge
 
 If you use a different name or language, set `WA_TEMPLATE_ORDER_UPDATE` /
 `WA_TEMPLATE_ORDER_UPDATE_LANG` on the server.
+
+---
+
+## `seller_alert` (Utility, English) - submitted via API 2026-10-14
+
+Alerts on the seller's own WhatsApp when a customer asks something and the seller hasn't messaged
+the shop number in the last 24 hours (inside that window alerts are plain text).
+
+```
+New customer question for your shop. From: {{1}} ({{2}}). Question: {{3}}. Swipe-reply to this message to answer them.
+```
+
+Sample: `{{1}}` = `Priya`, `{{2}}` = `+91 98765 43210`, `{{3}}` = `Is the chicken masala spicy?`.
+Override with `WA_TEMPLATE_SELLER_ALERT` / `WA_TEMPLATE_SELLER_ALERT_LANG`.

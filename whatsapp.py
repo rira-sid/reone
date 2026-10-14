@@ -17,7 +17,8 @@ def _error_detail(resp: httpx.Response) -> str:
         return resp.text
 
 
-async def _post_message(creds: WhatsAppCreds | None, payload: dict):
+async def _post_message(creds: WhatsAppCreds | None, payload: dict) -> str | None:
+    """Returns Meta's id for the sent message (None if Meta didn't give one)."""
     if creds is None:
         raise WhatsAppSendError("WhatsApp is not connected for this business")
     headers = {"Authorization": f"Bearer {creds.token}"}
@@ -29,17 +30,21 @@ async def _post_message(creds: WhatsAppCreds | None, payload: dict):
     print("SEND RESPONSE:", resp.status_code, resp.text)
     if resp.status_code >= 400:
         raise WhatsAppSendError(f"WhatsApp rejected the message: {_error_detail(resp)}")
+    try:
+        return resp.json()["messages"][0]["id"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        return None
 
 
-async def send_message(creds: WhatsAppCreds | None, to: str, text: str):
+async def send_message(creds: WhatsAppCreds | None, to: str, text: str) -> str | None:
     """Send a free-form text. Only works within 24h of the customer's last message.
     Raises WhatsAppSendError if Meta rejects it or can't be reached."""
-    await _post_message(creds, {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}})
+    return await _post_message(creds, {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}})
 
 
-async def send_template(creds: WhatsAppCreds | None, to: str, name: str, language: str, params: list[str]):
+async def send_template(creds: WhatsAppCreds | None, to: str, name: str, language: str, params: list[str]) -> str | None:
     """Send a Meta-approved template - the only kind of message allowed outside the 24h window."""
-    await _post_message(creds, {
+    return await _post_message(creds, {
         "messaging_product": "whatsapp",
         "to": to,
         "type": "template",
@@ -51,16 +56,10 @@ async def send_template(creds: WhatsAppCreds | None, to: str, name: str, languag
     })
 
 
-async def send_interactive(creds: WhatsAppCreds | None, to: str, interactive: dict):
+async def send_interactive(creds: WhatsAppCreds | None, to: str, interactive: dict) -> str | None:
     """Send an interactive message (button, order details...). Only within the 24h window."""
-    await _post_message(creds, {"messaging_product": "whatsapp", "recipient_type": "individual", "to": to,
+    return await _post_message(creds, {"messaging_product": "whatsapp", "recipient_type": "individual", "to": to,
                                 "type": "interactive", "interactive": interactive})
-
-
-async def send_audio(creds: WhatsAppCreds | None, to: str, data: bytes, mime_type: str = "audio/ogg"):
-    """Upload an OGG/Opus clip to WhatsApp and send it to the customer as a voice note."""
-    media_id = await upload_media(creds, data, mime_type, "reply.ogg")
-    await _post_message(creds, {"messaging_product": "whatsapp", "to": to, "type": "audio", "audio": {"id": media_id, "voice": True}})
 
 
 async def upload_media(creds: WhatsAppCreds | None, data: bytes, mime_type: str, filename: str) -> str:
@@ -118,3 +117,9 @@ async def download_media(creds: WhatsAppCreds | None, media_id: str) -> tuple[by
     except httpx.HTTPError as e:
         raise WhatsAppSendError(f"Could not reach WhatsApp: {e!r}") from e
     return media.content, info.get("mime_type", "application/octet-stream")
+
+
+async def send_reaction(creds: WhatsAppCreds | None, to: str, message_id: str, emoji: str):
+    """React to a message (e.g. ✅ on the seller's reply once it reached the customer)."""
+    await _post_message(creds, {"messaging_product": "whatsapp", "to": to, "type": "reaction",
+                                "reaction": {"message_id": message_id, "emoji": emoji}})

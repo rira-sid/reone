@@ -1,5 +1,5 @@
-"""One gentle reminder for orders left unpaid, sent while WhatsApp's 24h window is still open
-(the reminder is free-form text, so it can't go out after the window closes)."""
+"""Background jobs, every minute: one gentle reminder for unpaid orders (inside WhatsApp's 24h
+window), auto-cancel of orders still unpaid after a day, and escalating seller alerts."""
 import asyncio
 import os
 from datetime import datetime, timedelta, timezone
@@ -13,7 +13,8 @@ from notifications import within_service_window
 from whatsapp import WhatsAppSendError, send_message
 
 REMIND_AFTER = timedelta(hours=float(os.getenv("PAYMENT_REMINDER_AFTER_HOURS", "2")))
-CHECK_EVERY_SECONDS = 600
+CANCEL_UNPAID_AFTER = timedelta(hours=float(os.getenv("CANCEL_UNPAID_AFTER_HOURS", "24")))
+CHECK_EVERY_SECONDS = 60
 
 
 def _utc(value: datetime) -> datetime:
@@ -61,12 +62,47 @@ async def send_due_reminders(now: datetime | None = None) -> int:
     return sent
 
 
+async def cancel_stale_unpaid(now: datetime | None = None) -> int:
+    """Online orders nobody paid for within a day are cancelled, so they don't clutter the
+    seller's list. Their stock was never taken (online orders reserve stock when paid)."""
+    from notifications import notify_order_update
+    from routers.orders import release_stock
+
+    now = now or datetime.now(timezone.utc)
+    cancelled = 0
+    with SessionLocal() as db:
+        orders = (
+            db.query(models.Order)
+            .options(joinedload(models.Order.customer), joinedload(models.Order.business))
+            .filter(models.Order.is_paid.is_(False), models.Order.payment_method == "online",
+                    models.Order.status == "Pending")
+            .all()
+        )
+        for order in orders:
+            if not order.created_at or now - _utc(order.created_at) < CANCEL_UNPAID_AFTER:
+                continue
+            order.status = "Cancelled"
+            release_stock(db, order)
+            db.commit()
+            await notify_order_update(db, order.business, order,
+                                      "It was cancelled because the payment wasn't completed. You can order again any time")
+            cancelled += 1
+    return cancelled
+
+
 async def reminder_loop():
+    from seller_alerts import escalate_waiting
+
     while True:
         try:
             count = await send_due_reminders()
             if count:
                 print(f"Sent {count} payment reminder(s)")
+            count = await cancel_stale_unpaid()
+            if count:
+                print(f"Cancelled {count} unpaid order(s)")
+            with SessionLocal() as db:
+                await escalate_waiting(db)
         except Exception as e:  # never let the loop die
             print("REMINDER LOOP ERROR:", repr(e))
         await asyncio.sleep(CHECK_EVERY_SECONDS)

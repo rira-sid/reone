@@ -139,7 +139,7 @@ def pay_page(order_id: int, t: str = "", db: Session = Depends(get_db)):
         return _page(f"Paid - {b.name}", f"{head}<p class='paid'>✅ Paid - thank you!</p>")
     if order.status == "Cancelled":
         return _page(b.name, f"{head}<p>This order was cancelled.</p>")
-    items = ", ".join(f"{i.quantity} × {escape(i.product.name)}" for i in order.items)
+    items = ", ".join(f"{i.quantity} × {escape(i.display_name)}" for i in order.items)
     if effective_payment_method(b) in ("razorpay_link", "whatsapp_pay") and method_ready(b, "razorpay_link"):
         try:
             return _razorpay_page(db, b, order, head, items)
@@ -325,8 +325,8 @@ def order_details_message(business: models.Business, order: models.Order) -> dic
                 "order": {
                     "status": "pending",
                     "items": [{
-                        "retailer_id": str(i.product_id),
-                        "name": i.product.name,
+                        "retailer_id": f"{i.product_id}-{i.variant_id}" if i.variant_id else str(i.product_id),
+                        "name": i.display_name,
                         "amount": _money(i.price_at_order),
                         "quantity": i.quantity,
                     } for i in order.items],

@@ -25,6 +25,8 @@ class BusinessOut(BaseModel):
     razorpay_key_id: str | None
     accepting_orders: bool
     closed_message: str | None
+    welcome_message: str | None
+    alert_phone: str | None
     cod_enabled: bool
     delivery_fee: float
     free_delivery_above: float | None
@@ -54,6 +56,8 @@ class BusinessUpdate(BaseModel):
     razorpay_webhook_secret: str | None = None
     accepting_orders: bool | None = None
     closed_message: str | None = None
+    welcome_message: str | None = None
+    alert_phone: str | None = None
     cod_enabled: bool | None = None
     delivery_fee: float | None = None
     free_delivery_above: float | None = None
@@ -86,6 +90,8 @@ def _out(business: models.Business) -> dict:
         "razorpay_key_id": business.razorpay_key_id,
         "accepting_orders": business.accepting_orders,
         "closed_message": business.closed_message,
+        "welcome_message": business.welcome_message,
+        "alert_phone": business.alert_phone,
         "cod_enabled": business.cod_enabled,
         "delivery_fee": business.delivery_fee or 0.0,
         "free_delivery_above": business.free_delivery_above,
@@ -123,8 +129,16 @@ def update_business(
     for field in ("accepting_orders", "cod_enabled"):
         if data.get(field) is not None:
             setattr(business, field, data[field])
-    if "closed_message" in data:
-        business.closed_message = (data["closed_message"] or "").strip() or None
+    for field in ("closed_message", "welcome_message"):
+        if field in data:
+            setattr(business, field, (data[field] or "").strip() or None)
+    if "alert_phone" in data:
+        digits = re.sub(r"\D", "", data["alert_phone"] or "")
+        if len(digits) == 10:
+            digits = "91" + digits
+        if digits and not 11 <= len(digits) <= 15:
+            raise HTTPException(status_code=400, detail="Enter the alert number with country code, e.g. 91 98765 43210")
+        business.alert_phone = digits or None
     if "delivery_fee" in data:
         business.delivery_fee = max(0.0, data["delivery_fee"] or 0.0)
     for field in ("free_delivery_above", "min_order_amount"):
