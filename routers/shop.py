@@ -420,7 +420,8 @@ form input:focus,form textarea:focus{border-color:var(--violet);outline:none;box
 .done .big-emoji{font-size:4rem}
 .done a{display:inline-flex;align-items:center;justify-content:center;margin-top:18px;text-decoration:none}
 footer{text-align:center;color:var(--muted);font-size:.78rem;padding:28px 16px}
-.logo img{width:100%;height:100%;object-fit:cover;border-radius:16px}
+.logo{position:relative;overflow:hidden}
+.logo img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .tagline{margin:4px 0 0;font-weight:600;font-size:.9rem;opacity:.95}
 .about{background:#fff;border-radius:var(--radius);padding:18px 20px;margin:26px 0 0;box-shadow:0 4px 14px rgba(30,27,46,.07)}
 .about h2{margin-top:0}
