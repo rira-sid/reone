@@ -264,6 +264,10 @@ async def handle_incoming(
             turn = await ai.run_turn(business.name, conversation, products, image, recent_orders,
                                      shop_policies(business), audio=audio,
                                      language=language_name(conversation.preferred_language))
+        except ai.VoiceNotHeard as e:
+            print("VOICE NOTE NOT HEARD:", repr(e))
+            await _send_text(db, creds, conversation, t(conversation.preferred_language, "voice_unclear"))
+            return
         except Exception as e:
             # API outage, missing key, bad output... the seller answers instead.
             print("AI ERROR:", repr(e))
@@ -295,6 +299,8 @@ async def handle_incoming(
                 await _send_text(db, creds, conversation, turn.reply)
             else:
                 await _send_shop_button(db, business, creds, conversation, t(lang, "no_orders"))
+        elif turn.intent == "unclear":
+            await _send_text(db, creds, conversation, t(lang, "voice_unclear"))
         elif turn.intent == "change_language":
             await send_language_menu(db, business, creds, conversation)
         elif turn.intent == "greeting":

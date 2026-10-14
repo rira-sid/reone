@@ -37,5 +37,6 @@
  "back_to_whatsapp": "Kembali ke WhatsApp",
  "error": "Ada yang salah. Silakan coba lagi.",
  "no_products": "Belum ada produk - silakan cek lagi nanti.",
- "close": "Tutup"
+ "close": "Tutup",
+ "voice_unclear": "Maaf, pesan suara Anda kurang jelas. Bisa kirim ulang atau ketik pesan Anda?"
 }

@@ -37,5 +37,6 @@
  "back_to_whatsapp": "Back to WhatsApp",
  "error": "Something went wrong. Please try again.",
  "no_products": "No products yet - please check back soon.",
- "close": "Close"
+ "close": "Close",
+ "voice_unclear": "Sorry, I couldn't hear that voice note clearly. Could you send it again, or type your message?"
 }

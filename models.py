@@ -250,6 +250,16 @@ class ShopEvent(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class FounderUser(Base):
+    """RIRAONE's founder login for the founder console (separate from every shop login)."""
+    __tablename__ = "founder_users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, nullable=False, unique=True)
+    password_hash = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class SellerAlert(Base):
     """An alert sent to the seller's own WhatsApp. When the seller swipe-replies to it, the reply is
     passed on to the customer of `conversation_id`."""

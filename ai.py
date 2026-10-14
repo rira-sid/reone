@@ -19,6 +19,9 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 # then try the lighter model, before giving up and handing the chat to the seller.
 GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-flash-lite-latest")
 GEMINI_RETRY_DELAYS = (2, 5)
+# Voice notes never go to the lighter fallback model - it mishears speech and answers something
+# random. Wait longer for the main model instead; if it still can't, the customer is asked to resend.
+GEMINI_AUDIO_RETRY_DELAYS = (3, 6, 10, 15)
 HISTORY_LIMIT = 20
 
 _clients: dict = {}  # created on first use, so a missing key for the unused provider doesn't matter
@@ -44,12 +47,14 @@ Set intent to one of:
 - "order_status": they ask about one of THEIR existing orders - where it is, delivery status, tracking, payment status, payment link, invoice. Answer in reply using ONLY <customer_orders>: order number, status, paid or not, tracking if any, and the payment link again if it's unpaid. If they report a problem with an order (late, damaged, wrong, missing, refund) use "question" instead.
 - "greeting": just hello / thanks / ok / bye with nothing else to handle. reply with one short friendly line that fits what they said (thanks -> "you're welcome", bye -> a warm goodbye, hello -> greet them and say you can help them order).
 - "change_language": they ask to change the language.
+- "unclear": ONLY for a voice note you genuinely can't make out (noise, silence, too faint, cut off). \
+Never guess what an unclear voice note says - use "unclear" and leave reply empty.
 - "question": everything else - questions about products, delivery areas or times, discounts, custom or bulk requests, complaints, refunds, problems, talking to a person, or anything you're not sure about. The seller answers these personally; leave reply empty.
 
 Rules:
 - Language: reply in the language of the customer's LATEST message, in that language's own script (Tamil in Tamil script, Hindi in Devanagari...), even if it differs from <language>. Only if the latest message has no clear language (an emoji, "ok", a number) use <language>. Set language_code to the language of the customer's latest message: one of en, hi, ta, te, ml, kn, bn, mr, gu, or, pa, ur, ar, ms, id, es, fr, pt, zh - or null if it has no clear language. Tanglish / Hinglish (Tamil or Hindi typed in English letters) count as ta / hi.
 - Behave the same in every language: the same kind of message must get the same intent whether it is written in English, Tamil, Hindi or any other language, typed or spoken.
-- Customers may send a voice note. If audio is attached, listen to it, treat what they said as their message and set heard_text to exactly what they said, in their language and script. Otherwise leave heard_text null.
+- Customers may send a voice note. If audio is attached, listen to the WHOLE recording carefully, treat what they said as their message and set heard_text to exactly what they said, word for word, in their language and script. Answer what they actually said - never a generic reply. Otherwise leave heard_text null.
 - Customers may send a photo (a product picture or a handwritten list). Treat what it shows as part of their message.
 - Never confirm or imply that a payment was received unless <customer_orders> says the order is paid. A customer saying "paid", or sending a screenshot or transaction ID, does not make it paid.
 - Never make up prices, discounts, delivery dates or policies. Keep replies short, like a friendly shop assistant on WhatsApp. No markdown headings."""
@@ -62,11 +67,15 @@ class CartItem(BaseModel):
 
 
 class AssistantTurn(BaseModel):
-    intent: Literal["shop", "order_status", "greeting", "change_language", "question"]
+    intent: Literal["shop", "order_status", "greeting", "change_language", "question", "unclear"]
     reply: str
     cart: list[CartItem]
     heard_text: str | None = None
     language_code: str | None = None
+
+
+class VoiceNotHeard(Exception):
+    """A voice note couldn't be transcribed - ask the customer to resend or type it."""
 
 
 class AssistantUnavailable(Exception):
@@ -187,7 +196,12 @@ async def _run_gemini(prompt: str, image: tuple[bytes, str] | None, audio: tuple
         response_mime_type="application/json",
         response_schema=AssistantTurn,
     )
-    attempts = [GEMINI_MODEL] * (len(GEMINI_RETRY_DELAYS) + 1) + [GEMINI_FALLBACK_MODEL]
+    if audio:
+        delays = GEMINI_AUDIO_RETRY_DELAYS
+        attempts = [GEMINI_MODEL] * (len(delays) + 1)
+    else:
+        delays = GEMINI_RETRY_DELAYS
+        attempts = [GEMINI_MODEL] * (len(delays) + 1) + [GEMINI_FALLBACK_MODEL]
     for i, model in enumerate(attempts):
         try:
             response = await _gemini_client().aio.models.generate_content(model=model, contents=contents, config=config)
@@ -195,10 +209,12 @@ async def _run_gemini(prompt: str, image: tuple[bytes, str] | None, audio: tuple
         except errors.APIError as e:
             busy = e.code in (429, 500, 503, 504)
             if not busy or i == len(attempts) - 1:
+                if audio and busy:
+                    raise VoiceNotHeard(f"Gemini busy ({e.code}) - voice note not transcribed") from e
                 raise
             print(f"GEMINI BUSY ({e.code}) on {model}, retrying")
-            if i < len(GEMINI_RETRY_DELAYS):
-                await asyncio.sleep(GEMINI_RETRY_DELAYS[i])
+            if i < len(delays):
+                await asyncio.sleep(delays[i])
     if isinstance(response.parsed, AssistantTurn):
         return response.parsed
     if not response.text:

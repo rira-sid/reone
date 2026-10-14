@@ -1036,12 +1036,36 @@ def test_bare_bot_command_from_seller_hands_back_latest_chat(client, fake_ai, fa
 
 # ---- founder console, branding, funnel -----------------------------------------------------
 
-def test_founder_console_onboards_and_tracks_businesses(client):
-    founder_h = owner_headers(client)
-    assert client.get("/auth/me", headers=founder_h).json()["is_founder"]
+def founder_headers(client):
+    """Create the founder account once (needs DASHBOARD_PASSWORD as setup key), then log in."""
+    if client.get("/founder/status").json()["setup_needed"]:
+        body = {"email": "founder@rira.one", "password": "short", "setup_key": "owner-pass"}
+        assert client.post("/founder/setup", json=body).status_code == 400  # password too short
+        assert client.post("/founder/setup", json={**body, "password": "a-long-founder-pass",
+                                                   "setup_key": "wrong"}).status_code == 403
+        assert client.post("/founder/setup", json={**body, "password": "a-long-founder-pass"}).status_code == 200
+    r = client.post("/founder/login", json={"email": "Founder@rira.one", "password": "a-long-founder-pass"})
+    assert r.status_code == 200
+    return {"Authorization": f"Bearer {r.json()['token']}"}
+
+
+def test_founder_login_is_separate_from_shop_logins(client):
+    founder_h = founder_headers(client)
+    assert client.get("/founder/status").json()["setup_needed"] is False
+    assert client.post("/founder/setup", json={"email": "x@y.z", "password": "another-long-pass",
+                                               "setup_key": "owner-pass"}).status_code == 403  # only once
+    assert client.post("/founder/login", json={"email": "founder@rira.one", "password": "nope"}).status_code == 401
+    # Shop logins - even business 1's owner - can't use the founder console...
+    assert client.get("/admin/overview", headers=owner_headers(client)).status_code == 401
     _, seller_h = new_seller(client)
-    assert not client.get("/auth/me", headers=seller_h).json()["is_founder"]
-    assert client.get("/admin/overview", headers=seller_h).status_code == 403
+    assert client.get("/admin/overview", headers=seller_h).status_code == 401
+    # ...and a founder token isn't a shop login.
+    assert client.get("/orders", headers=founder_h).status_code == 401
+    assert client.get("/founder/me", headers=founder_h).json()["email"] == "founder@rira.one"
+
+
+def test_founder_console_onboards_and_tracks_businesses(client):
+    founder_h = founder_headers(client)
 
     r = client.post("/admin/businesses", json={"name": "Anu Bakes", "email": "Anu@Bakes.in"}, headers=founder_h)
     assert r.status_code == 200, r.text
@@ -1097,3 +1121,38 @@ def test_shop_branding(client):
     # A very light brand colour still gives readable (darker) text.
     client.patch("/business", json={"brand_color": "#FDE68A"}, headers=h)
     assert "--violet:#FDE68A" not in client.get(f"/shop/{business_id}").text
+
+
+def test_voice_note_never_guessed(client, fake_ai, fake_whatsapp, monkeypatch):
+    new_seller(client, wa_phone_number_id="PN_VOICE2", wa_token="t")
+    start_chat(client, "PN_VOICE2", "919000000203", lang="ta")
+    fake_ai.queue = [fake_ai.turn(intent="unclear")]
+    whatsapp_message(client, "PN_VOICE2", "919000000203", {"type": "audio", "audio": {"id": "AUDIO9"}})
+    assert "வாய்ஸ் நோட்" in fake_whatsapp.sent[-1][3]
+
+    async def busy(*args, **kwargs):
+        raise ai.VoiceNotHeard("busy")
+    monkeypatch.setattr(ai, "run_turn", busy)
+    whatsapp_message(client, "PN_VOICE2", "919000000203", {"type": "audio", "audio": {"id": "AUDIO10"}})
+    assert "வாய்ஸ் நோட்" in fake_whatsapp.sent[-1][3]  # asked to resend, not a random answer
+
+
+def test_audio_never_uses_fallback_model(monkeypatch):
+    import asyncio
+    from google.genai import errors
+    tried = []
+
+    class Models:
+        async def generate_content(self, model, contents, config):
+            tried.append(model)
+            raise errors.APIError(503, {"error": {"message": "busy"}})
+
+    fake = type("C", (), {"aio": type("A", (), {"models": Models()})()})()
+    monkeypatch.setattr(ai, "_gemini_client", lambda: fake)
+    monkeypatch.setattr(ai, "GEMINI_AUDIO_RETRY_DELAYS", (0, 0))
+    raised = False
+    try:
+        asyncio.run(ai._run_gemini("p", None, (b"ogg", "audio/ogg")))
+    except ai.VoiceNotHeard:
+        raised = True
+    assert raised and len(tried) == 3 and all(m == ai.GEMINI_MODEL for m in tried)

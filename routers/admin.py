@@ -1,5 +1,5 @@
 """Founder console: every business on RIRAONE, how each is doing, and onboarding new ones.
-Only the founder (owner of business 1) can call these."""
+Only a founder login (founder_auth.py) can call these - shop logins never can."""
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -9,14 +9,15 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import models
-from auth import email_taken, founder, hash_password, issue_token
+from auth import email_taken, hash_password, issue_token
+from founder_auth import current_founder
 from business import DEFAULT_BUSINESS_ID, whatsapp_creds
 from database import get_db
 from routers.insights import funnel
 from routers.invoices import PUBLIC_BASE_URL
 from routers.pay import effective_payment_method
 
-router = APIRouter(prefix="/admin", tags=["founder"], dependencies=[Depends(founder)])
+router = APIRouter(prefix="/admin", tags=["founder"], dependencies=[Depends(current_founder)])
 
 
 def _utc(value: datetime | None) -> datetime | None:

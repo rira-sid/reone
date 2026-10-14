@@ -104,11 +104,6 @@ class CurrentUser:
     def is_owner(self) -> bool:
         return self.staff is None
 
-    @property
-    def is_founder(self) -> bool:
-        """RIRAONE's founder = the owner of business 1 (the original shop). Sees the founder console."""
-        return self.is_owner and self.business.id == DEFAULT_BUSINESS_ID
-
 
 def current_user(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> CurrentUser:
     scheme, _, token = (authorization or "").partition(" ")
@@ -127,12 +122,6 @@ def current_user(authorization: str | None = Header(default=None), db: Session =
         if not staff or staff.business_id != business.id:  # removed staff lose access immediately
             raise HTTPException(status_code=401, detail="Please log in")
     return CurrentUser(business, staff)
-
-
-def founder(user: CurrentUser = Depends(current_user)) -> CurrentUser:
-    if not user.is_founder:
-        raise HTTPException(status_code=403, detail="Founder only")
-    return user
 
 
 def current_business(user: CurrentUser = Depends(current_user)) -> models.Business:
@@ -236,7 +225,6 @@ class MeOut(BaseModel):
     business_name: str
     role: str
     name: str | None
-    is_founder: bool = False
 
 
 @router.get("/me", response_model=MeOut)
@@ -246,5 +234,4 @@ def me(user: CurrentUser = Depends(current_user)):
         "business_name": user.business.name,
         "role": "owner" if user.is_owner else "staff",
         "name": user.staff.name if user.staff else None,
-        "is_founder": user.is_founder,
     }

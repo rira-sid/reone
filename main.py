@@ -16,6 +16,7 @@ from database import Base, engine, SessionLocal
 from business import DEFAULT_BUSINESS_ID, business_for_phone_number_id
 import models
 import auth
+import founder_auth
 from chatbot import handle_incoming
 from migrate import add_missing_columns
 from reminders import reminder_loop
@@ -43,15 +44,17 @@ app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174"],
     # Covers the production domain plus every Vercel preview deployment URL,
     # so a new preview build isn't blocked until someone remembers to add it here.
     allow_origin_regex=r"https://.*\.vercel\.app",
+    # (covers both the seller dashboard and the separate founder console)
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(auth.router)
+app.include_router(founder_auth.router)
 app.include_router(products.router)
 app.include_router(orders.router)
 app.include_router(payments.router)

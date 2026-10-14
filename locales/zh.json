@@ -37,5 +37,6 @@
  "back_to_whatsapp": "返回 WhatsApp",
  "error": "出错了，请再试一次。",
  "no_products": "暂无商品——请稍后再来看看。",
- "close": "关闭"
+ "close": "关闭",
+ "voice_unclear": "抱歉，没有听清您的语音消息。可以再发一次，或者打字告诉我吗？"
 }

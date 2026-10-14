@@ -37,5 +37,6 @@
  "back_to_whatsapp": "Volver a WhatsApp",
  "error": "Algo salió mal. Por favor, inténtalo de nuevo.",
  "no_products": "Aún no hay productos, vuelve a revisar pronto.",
- "close": "Cerrar"
+ "close": "Cerrar",
+ "voice_unclear": "Perdón, no pude escuchar bien tu nota de voz. ¿Puedes enviarla de nuevo o escribir tu mensaje?"
 }

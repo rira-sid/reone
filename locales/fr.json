@@ -37,5 +37,6 @@
  "back_to_whatsapp": "Retour sur WhatsApp",
  "error": "Un problème est survenu. Veuillez réessayer.",
  "no_products": "Pas encore de produits - revenez nous voir bientôt.",
- "close": "Fermer"
+ "close": "Fermer",
+ "voice_unclear": "Désolé, je n'ai pas bien entendu votre message vocal. Pouvez-vous le renvoyer ou l'écrire ?"
 }
