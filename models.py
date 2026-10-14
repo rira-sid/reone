@@ -49,6 +49,16 @@ class Business(Base):
     welcome_message = Column(Text, nullable=True)
     alert_phone = Column(String, nullable=True)
 
+    # Shop page branding
+    brand_color = Column(String, nullable=True)  # "#RRGGBB"; None = RIRAONE's default gradient
+    tagline = Column(String, nullable=True)
+    about = Column(Text, nullable=True)
+    logo_image_id = Column(Integer, nullable=True)
+    banner_image_id = Column(Integer, nullable=True)
+
+    # The founder can pause a business: its shop and WhatsApp bot stop, its login is refused.
+    is_active = Column(Boolean, default=True, nullable=False)
+
     products = relationship("Product", back_populates="business")
     orders = relationship("Order", back_populates="business")
 
@@ -215,6 +225,29 @@ class Message(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     conversation = relationship("Conversation", back_populates="messages")
+
+
+class ShopImage(Base):
+    """A business's logo or shop banner (stored in the database, like product photos)."""
+    __tablename__ = "shop_images"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False, index=True)
+    data = Column(LargeBinary, nullable=False)
+    mime_type = Column(String, nullable=False, default="image/jpeg")
+
+
+SHOP_EVENTS = ("view", "add_to_cart", "checkout_open", "order")
+
+
+class ShopEvent(Base):
+    """One step of the shop funnel: page view -> added to cart -> opened checkout -> placed order."""
+    __tablename__ = "shop_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False, index=True)
+    kind = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 class SellerAlert(Base):

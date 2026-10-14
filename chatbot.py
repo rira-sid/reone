@@ -23,7 +23,7 @@ from whatsapp import WhatsAppSendError, download_media, send_interactive, send_m
 
 # Don't repeat "the seller will reply" to every message of a customer who sends several in a row.
 ACK_EVERY = timedelta(minutes=10)
-# After the seller has answered, small talk ("ok", "thanks") goes to the seller too, not the bot.
+# While the seller is answering a customer, don't keep telling the customer "the seller will reply".
 SELLER_CHAT_ACTIVE = timedelta(minutes=30)
 MORE_LANGUAGES_ID = "lang:more"
 
@@ -281,9 +281,6 @@ async def handle_incoming(
             conversation.language = language_name(turn.language_code)
             db.commit()
         lang = conversation.preferred_language
-        now = datetime.now(timezone.utc)
-        seller_chatting = (conversation.needs_seller or (
-            _utc(conversation.last_seller_reply_at) and now - _utc(conversation.last_seller_reply_at) < SELLER_CHAT_ACTIVE))
 
         if turn.intent == "shop":
             if not business.accepting_orders:
@@ -300,7 +297,8 @@ async def handle_incoming(
                 await _send_shop_button(db, business, creds, conversation, t(lang, "no_orders"))
         elif turn.intent == "change_language":
             await send_language_menu(db, business, creds, conversation)
-        elif turn.intent == "greeting" and not seller_chatting:
+        elif turn.intent == "greeting":
+            # Hello / thanks / ok are always answered by the assistant - never worth an alert.
             await _send_text(db, creds, conversation, turn.reply.strip() or "🙏")
         else:
             await route_to_seller(db, business, creds, conversation, incoming.text)

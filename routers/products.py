@@ -76,6 +76,21 @@ def _apply_variants(db: Session, product: models.Product, variants: list[schemas
         product.stock = sum(v.stock for v in active)
 
 
+def decode_image(data_url: str) -> tuple[bytes, str]:
+    """Data URL (data:image/jpeg;base64,...) -> (bytes, mime). Raises HTTPException(400)."""
+    try:
+        header, encoded = data_url.split(",", 1)
+        mime = header.split(":", 1)[1].split(";", 1)[0]
+        raw = base64.b64decode(encoded, validate=True)
+    except (ValueError, IndexError, binascii.Error):
+        raise HTTPException(status_code=400, detail="Not a valid image")
+    if mime not in IMAGE_TYPES:
+        raise HTTPException(status_code=400, detail="Use a JPEG, PNG or WebP photo")
+    if len(raw) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail="Photo is too large")
+    return raw, mime
+
+
 @router.get("", response_model=list[schemas.ProductOut])
 def list_products(db: Session = Depends(get_db), business: models.Business = Depends(current_business)):
     products = db.query(models.Product).filter(
@@ -129,16 +144,7 @@ def add_image(product_id: int, payload: schemas.ImageUpload, db: Session = Depen
     product = _get_product(db, business, product_id)
     if len(product.images) >= MAX_IMAGES:
         raise HTTPException(status_code=400, detail=f"Up to {MAX_IMAGES} photos per product")
-    try:
-        header, encoded = payload.data.split(",", 1)
-        mime = header.split(":", 1)[1].split(";", 1)[0]
-        raw = base64.b64decode(encoded, validate=True)
-    except (ValueError, IndexError, binascii.Error):
-        raise HTTPException(status_code=400, detail="Not a valid image")
-    if mime not in IMAGE_TYPES:
-        raise HTTPException(status_code=400, detail="Use a JPEG, PNG or WebP photo")
-    if len(raw) > MAX_IMAGE_BYTES:
-        raise HTTPException(status_code=400, detail="Photo is too large")
+    raw, mime = decode_image(payload.data)
     position = max([i.position for i in product.images], default=-1) + 1
     db.add(models.ProductImage(product_id=product.id, data=raw, mime_type=mime, position=position))
     db.commit()

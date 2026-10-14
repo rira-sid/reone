@@ -10,6 +10,7 @@ from business import razorpay_creds, whatsapp_creds
 from routers.pay import PAYMENT_METHODS, effective_payment_method, method_ready
 from database import get_db
 from secrets_box import encrypt
+from routers.invoices import PUBLIC_BASE_URL
 
 router = APIRouter(prefix="/business", tags=["business"])
 
@@ -27,6 +28,11 @@ class BusinessOut(BaseModel):
     closed_message: str | None
     welcome_message: str | None
     alert_phone: str | None
+    brand_color: str | None
+    tagline: str | None
+    about: str | None
+    logo_url: str | None
+    banner_url: str | None
     cod_enabled: bool
     delivery_fee: float
     free_delivery_above: float | None
@@ -58,6 +64,9 @@ class BusinessUpdate(BaseModel):
     closed_message: str | None = None
     welcome_message: str | None = None
     alert_phone: str | None = None
+    brand_color: str | None = None
+    tagline: str | None = None
+    about: str | None = None
     cod_enabled: bool | None = None
     delivery_fee: float | None = None
     free_delivery_above: float | None = None
@@ -70,6 +79,13 @@ class BusinessUpdate(BaseModel):
 
 # name@bank - letters, digits, dot, dash, underscore before the @, letters after it.
 UPI_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,256}@[A-Za-z][A-Za-z0-9.-]{1,63}$")
+
+
+BRAND_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def shop_image_url(image_id: int | None) -> str | None:
+    return f"{PUBLIC_BASE_URL}/shop/media/{image_id}" if image_id else None
 
 
 class PasswordChange(BaseModel):
@@ -92,6 +108,11 @@ def _out(business: models.Business) -> dict:
         "closed_message": business.closed_message,
         "welcome_message": business.welcome_message,
         "alert_phone": business.alert_phone,
+        "brand_color": business.brand_color,
+        "tagline": business.tagline,
+        "about": business.about,
+        "logo_url": shop_image_url(business.logo_image_id),
+        "banner_url": shop_image_url(business.banner_image_id),
         "cod_enabled": business.cod_enabled,
         "delivery_fee": business.delivery_fee or 0.0,
         "free_delivery_above": business.free_delivery_above,
@@ -129,9 +150,17 @@ def update_business(
     for field in ("accepting_orders", "cod_enabled"):
         if data.get(field) is not None:
             setattr(business, field, data[field])
-    for field in ("closed_message", "welcome_message"):
+    for field, limit in (("closed_message", 500), ("welcome_message", 500), ("tagline", 80), ("about", 800)):
         if field in data:
-            setattr(business, field, (data[field] or "").strip() or None)
+            value = (data[field] or "").strip() or None
+            if value and len(value) > limit:
+                raise HTTPException(status_code=400, detail=f"Keep it under {limit} characters")
+            setattr(business, field, value)
+    if "brand_color" in data:
+        color = (data["brand_color"] or "").strip() or None
+        if color and not BRAND_COLOR_RE.match(color):
+            raise HTTPException(status_code=400, detail="Colour must look like #7C3AED")
+        business.brand_color = color
     if "alert_phone" in data:
         digits = re.sub(r"\D", "", data["alert_phone"] or "")
         if len(digits) == 10:
@@ -287,3 +316,40 @@ def remove_staff(staff_id: int, business: models.Business = Depends(owner_busine
     db.delete(_get_staff(db, business, staff_id))
     db.commit()
     return {"status": "deleted"}
+
+
+# ---- shop branding images (logo, banner) ----------------------------------------------------
+
+class ShopImageUpload(BaseModel):
+    data: str  # data URL
+
+
+@router.post("/images/{kind}", response_model=BusinessOut)
+def upload_shop_image(kind: str, payload: ShopImageUpload, business: models.Business = Depends(owner_business),
+                      db: Session = Depends(get_db)):
+    from routers.products import decode_image
+
+    if kind not in ("logo", "banner"):
+        raise HTTPException(status_code=404, detail="Unknown image")
+    raw, mime = decode_image(payload.data)
+    old_id = getattr(business, f"{kind}_image_id")
+    image = models.ShopImage(business_id=business.id, data=raw, mime_type=mime)
+    db.add(image)
+    db.flush()
+    setattr(business, f"{kind}_image_id", image.id)
+    if old_id:
+        db.query(models.ShopImage).filter(models.ShopImage.id == old_id).delete()
+    db.commit()
+    return _out(business)
+
+
+@router.delete("/images/{kind}", response_model=BusinessOut)
+def delete_shop_image(kind: str, business: models.Business = Depends(owner_business), db: Session = Depends(get_db)):
+    if kind not in ("logo", "banner"):
+        raise HTTPException(status_code=404, detail="Unknown image")
+    old_id = getattr(business, f"{kind}_image_id")
+    setattr(business, f"{kind}_image_id", None)
+    if old_id:
+        db.query(models.ShopImage).filter(models.ShopImage.id == old_id).delete()
+    db.commit()
+    return _out(business)

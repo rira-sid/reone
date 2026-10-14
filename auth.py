@@ -75,9 +75,9 @@ def sign_value(value: str) -> str:
     return _sign(f"link:{value}")[:32]
 
 
-def issue_token(business_id: int, staff_id: int = 0) -> tuple[str, int]:
+def issue_token(business_id: int, staff_id: int = 0, ttl: int = TOKEN_TTL_SECONDS) -> tuple[str, int]:
     """staff_id 0 means the business owner."""
-    expires_at = int(time.time()) + TOKEN_TTL_SECONDS
+    expires_at = int(time.time()) + ttl
     payload = f"{business_id}:{staff_id}:{expires_at}"
     token = base64.urlsafe_b64encode(f"{payload}.{_sign(payload)}".encode()).decode()
     return token, expires_at
@@ -104,6 +104,11 @@ class CurrentUser:
     def is_owner(self) -> bool:
         return self.staff is None
 
+    @property
+    def is_founder(self) -> bool:
+        """RIRAONE's founder = the owner of business 1 (the original shop). Sees the founder console."""
+        return self.is_owner and self.business.id == DEFAULT_BUSINESS_ID
+
 
 def current_user(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> CurrentUser:
     scheme, _, token = (authorization or "").partition(" ")
@@ -114,12 +119,20 @@ def current_user(authorization: str | None = Header(default=None), db: Session =
     business = db.get(models.Business, ids[0]) if ids else None
     if not business:
         raise HTTPException(status_code=401, detail="Please log in")
+    if not business.is_active:
+        raise HTTPException(status_code=403, detail="This account is paused. Please contact RIRAONE support.")
     staff = None
     if ids[1]:
         staff = db.get(models.StaffUser, ids[1])
         if not staff or staff.business_id != business.id:  # removed staff lose access immediately
             raise HTTPException(status_code=401, detail="Please log in")
     return CurrentUser(business, staff)
+
+
+def founder(user: CurrentUser = Depends(current_user)) -> CurrentUser:
+    if not user.is_founder:
+        raise HTTPException(status_code=403, detail="Founder only")
+    return user
 
 
 def current_business(user: CurrentUser = Depends(current_user)) -> models.Business:
@@ -178,6 +191,8 @@ async def login(payload: LoginIn, db: Session = Depends(get_db)):
             func.lower(models.Business.owner_email) == _normalise_email(payload.email)
         ).first()
         if business and verify_password(payload.password, business.password_hash):
+            if not business.is_active:
+                raise HTTPException(status_code=403, detail="This account is paused. Please contact RIRAONE support.")
             return _token_response(business.id)
         staff = db.query(models.StaffUser).filter(
             func.lower(models.StaffUser.email) == _normalise_email(payload.email)
@@ -221,6 +236,7 @@ class MeOut(BaseModel):
     business_name: str
     role: str
     name: str | None
+    is_founder: bool = False
 
 
 @router.get("/me", response_model=MeOut)
@@ -230,4 +246,5 @@ def me(user: CurrentUser = Depends(current_user)):
         "business_name": user.business.name,
         "role": "owner" if user.is_owner else "staff",
         "name": user.staff.name if user.staff else None,
+        "is_founder": user.is_founder,
     }

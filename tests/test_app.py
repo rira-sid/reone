@@ -290,10 +290,11 @@ def test_question_goes_to_seller_who_replies_from_whatsapp(client, fake_ai, fake
     msgs = client.get(f"/conversations/{convo['id']}/messages", headers=h).json()
     assert msgs[-1]["sender"] == "seller" and msgs[-1]["text"] == "Mild, and yes vegan!"
 
-    # Small talk right after the seller's answer goes to the seller, not the bot.
-    fake_ai.queue = [fake_ai.turn(intent="greeting", reply="bot says hi")]
+    # Small talk is always the assistant's job - no alert for "thank you".
+    fake_ai.queue = [fake_ai.turn(intent="greeting", reply="You're welcome!")]
+    sent = len(fake_whatsapp.sent)
     whatsapp_message(client, "PN_ASK", "919000000109", text("thank you"))
-    assert "bot says hi" not in [s[3] for s in fake_whatsapp.sent]
+    assert [s[1:] for s in fake_whatsapp.sent[sent:]] == [("919000000109", "text", "You're welcome!")]
 
 
 def test_seller_message_without_swipe_is_treated_as_customer(client, fake_ai, fake_whatsapp):
@@ -308,8 +309,9 @@ def test_seller_hands_chat_back_with_bot_command(client, fake_ai, fake_whatsapp)
     start_chat(client, "PN_BACK", "919000000110")
     whatsapp_message(client, "PN_BACK", "919000000110", text("custom cake?"))
     alert_no = max(i for i, s in enumerate(fake_whatsapp.sent) if s[1] == SELLER) + 1
-    whatsapp_message(client, "PN_BACK", SELLER, {**text("#bot"), "context": {"id": f"wamid.out.{alert_no}"}})
+    whatsapp_message(client, "PN_BACK", SELLER, {**text("Bot"), "context": {"id": f"wamid.out.{alert_no}"}})
     assert "assistant is back on" in fake_whatsapp.sent[-1][3]
+    assert not [m for m in fake_whatsapp.sent if m[1] == "919000000110" and m[3] == "Bot"]  # never relayed
     convo = [c for c in client.get("/conversations", headers=h).json() if c["phone"] == "919000000110"][0]
     assert not convo["needs_seller"] and not convo["ai_paused"]
 
@@ -1018,3 +1020,15 @@ def test_shop_answer_is_the_ais_reply_in_the_customers_language(client, fake_ai,
 
     whatsapp_message(client, "PN_LANG", "919000000201", text("preservatives irukka?"))  # fake AI: question
     assert "விற்பனையாளருக்கு" in fake_whatsapp.sent[-1][3]  # "passed to the seller" in Tamil
+
+
+def test_bare_bot_command_from_seller_hands_back_latest_chat(client, fake_ai, fake_whatsapp):
+    business_id, h = new_seller(client, wa_phone_number_id="PN_BARE", wa_token="t", alert_phone=SELLER)
+    open_seller_window(business_id)
+    start_chat(client, "PN_BARE", "919000000202")
+    whatsapp_message(client, "PN_BARE", "919000000202", text("custom order?"))
+    whatsapp_message(client, "PN_BARE", SELLER, text("bot."))  # no swipe
+    assert "assistant is back on" in fake_whatsapp.sent[-1][3]
+    assert not [m for m in fake_whatsapp.sent if m[1] == "919000000202" and m[3] == "bot."]
+    convo = [c for c in client.get("/conversations", headers=h).json() if c["phone"] == "919000000202"][0]
+    assert not convo["needs_seller"]

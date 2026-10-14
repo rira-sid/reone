@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 import models
@@ -24,6 +24,22 @@ def _ist(value: datetime) -> datetime:
 
 def _paid_amount(orders):
     return round(sum(o.total_amount for o in orders if o.is_paid), 2)
+
+
+def funnel(db: Session, business_id: int, days: int = 30) -> dict:
+    """Shop funnel over the last `days`: page views -> added to cart -> opened checkout -> orders -> paid."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    counts = dict(
+        db.query(models.ShopEvent.kind, func.count(models.ShopEvent.id))
+        .filter(models.ShopEvent.business_id == business_id, models.ShopEvent.created_at >= since)
+        .group_by(models.ShopEvent.kind)
+        .all()
+    )
+    paid = db.query(models.Order).filter(
+        models.Order.business_id == business_id, models.Order.created_at >= since, models.Order.is_paid.is_(True)
+    ).count()
+    return {"views": counts.get("view", 0), "carts": counts.get("add_to_cart", 0),
+            "checkouts": counts.get("checkout_open", 0), "orders": counts.get("order", 0), "paid": paid}
 
 
 @router.get("/stats")
@@ -81,6 +97,7 @@ def stats(db: Session = Depends(get_db), business: models.Business = Depends(cur
         "total_orders": len(orders),
         "daily": daily,
         "top_products": top_products,
+        "funnel": funnel(db, business.id),
     }
 
 

@@ -16,7 +16,13 @@ SELLER_ALERT_TEMPLATE = os.getenv("WA_TEMPLATE_SELLER_ALERT", "seller_alert")
 SELLER_ALERT_TEMPLATE_LANG = os.getenv("WA_TEMPLATE_SELLER_ALERT_LANG", "en")
 REALERT_AFTER = timedelta(minutes=5)
 TELL_CUSTOMER_AFTER = timedelta(minutes=15)
-HAND_BACK = {"#bot", "#done", "#ai"}
+# "Bot", "#bot", "bot.", "AI" ... all mean "let the assistant handle this chat" - never sent to the customer.
+HAND_BACK_WORDS = {"bot", "ai", "assistant"}
+
+
+def is_hand_back(text: str) -> bool:
+    word = re.sub(r"[^a-z]", "", (text or "").lower())
+    return word in HAND_BACK_WORDS or (text or "").strip().lower() == "#done"
 
 
 def _digits(phone: str | None) -> str:
@@ -58,7 +64,7 @@ async def _send_alert(db, business: models.Business, conversation: models.Conver
 
 async def alert_seller(db, business: models.Business, conversation: models.Conversation, question: str) -> bool:
     text = (f"❓ {_who(conversation)} (+{conversation.phone}) asks:\n\"{question}\"\n\n"
-            "↩️ Swipe-reply to this message to answer.\nReply #bot to hand the chat back to the assistant.")
+            "↩️ Swipe-reply to this message to answer.\nReply *bot* to let the assistant handle it.")
     return await _send_alert(db, business, conversation, text, question)
 
 
@@ -76,13 +82,22 @@ async def notify_seller(db, business: models.Business, text: str) -> bool:
         return False
 
 
+def _alert_for(db, business: models.Business, context_id: str | None):
+    alerts = db.query(models.SellerAlert).filter(models.SellerAlert.business_id == business.id)
+    if context_id:
+        return alerts.filter(models.SellerAlert.wa_message_id == context_id).first()
+    return alerts.order_by(models.SellerAlert.id.desc()).first()
+
+
 def is_seller_reply(db, business: models.Business, phone: str, context_id: str | None, text: str) -> bool:
-    """A message from the seller's own number that replies to one of our alerts."""
-    if not context_id or not business.alert_phone or _digits(phone) != _digits(business.alert_phone):
+    """A message from the seller's own number that swipe-replies to one of our alerts - or a bare
+    "bot" command, which applies to the latest alerted chat. Anything else from the seller's number
+    is treated as a normal customer message (sellers test their own shop)."""
+    if not business.alert_phone or _digits(phone) != _digits(business.alert_phone):
         return False
-    return db.query(models.SellerAlert).filter(
-        models.SellerAlert.business_id == business.id, models.SellerAlert.wa_message_id == context_id
-    ).first() is not None
+    if not context_id and not is_hand_back(text):
+        return False
+    return _alert_for(db, business, context_id) is not None
 
 
 async def _react(creds, to: str, message_id: str | None, emoji: str):
@@ -97,13 +112,11 @@ async def _react(creds, to: str, message_id: str | None, emoji: str):
 async def handle_seller_reply(db, business: models.Business, phone: str, text: str, context_id: str,
                               wa_message_id: str | None):
     creds = whatsapp_creds(business)
-    alert = db.query(models.SellerAlert).filter(
-        models.SellerAlert.business_id == business.id, models.SellerAlert.wa_message_id == context_id
-    ).first()
+    alert = _alert_for(db, business, context_id)
     conversation = alert.conversation
     name = _who(conversation)
 
-    if text.strip().lower() in HAND_BACK:
+    if is_hand_back(text):
         conversation.needs_seller = False
         conversation.seller_alert_stage = 0
         conversation.ai_paused = False
