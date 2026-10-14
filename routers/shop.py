@@ -52,7 +52,8 @@ def _nutrition_rows(text: str | None) -> list[list[str]]:
         if not line.strip():
             continue
         label, _, value = line.partition(":")
-        rows.append([label.strip(), value.strip()])
+        if label.strip() and value.strip():
+            rows.append([label.strip(), value.strip()])
     return rows
 
 

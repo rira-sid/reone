@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 import models
@@ -57,10 +58,12 @@ def stats(db: Session = Depends(get_db), business: models.Business = Depends(cur
     )[:5]
 
     conversations = db.query(models.Conversation).filter(
-        models.Conversation.business_id == business.id, models.Conversation.ai_paused.is_(True)
+        models.Conversation.business_id == business.id,
+        or_(models.Conversation.ai_paused.is_(True), models.Conversation.needs_seller.is_(True)),
     ).all()
-    # A paused chat only needs the seller if the customer spoke last.
-    needs_you = sum(1 for c in conversations if c.messages and c.messages[-1].sender == "customer")
+    # Open customer questions, plus paused chats where the customer spoke last.
+    needs_you = sum(1 for c in conversations
+                    if c.needs_seller or (c.messages and c.messages[-1].sender == "customer"))
 
     low_stock = db.query(models.Product).filter(
         models.Product.business_id == business.id,
