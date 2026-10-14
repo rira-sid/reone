@@ -274,6 +274,12 @@ async def handle_incoming(
         if audio and turn.heard_text:
             incoming.text = f"🎤 {turn.heard_text}"  # what the seller sees in the inbox and alerts
             db.commit()
+        # Follow the language the customer is actually using now (e.g. picked English, then writes Tamil),
+        # so fixed texts, buttons and the shop page match the AI's reply.
+        if turn.language_code in LANGUAGES and turn.language_code in available_languages()                 and turn.language_code != conversation.preferred_language:
+            conversation.preferred_language = turn.language_code
+            conversation.language = language_name(turn.language_code)
+            db.commit()
         lang = conversation.preferred_language
         now = datetime.now(timezone.utc)
         seller_chatting = (conversation.needs_seller or (
@@ -286,7 +292,7 @@ async def handle_incoming(
                 valid = {p.id: p for p in products}
                 cart = [i for i in turn.cart if i.product_id in valid and (
                     i.variant_id is None or any(v.id == i.variant_id for v in valid[i.product_id].active_variants))]
-                await _send_shop_button(db, business, creds, conversation, t(lang, "shop_again"), cart)
+                await _send_shop_button(db, business, creds, conversation, turn.reply.strip() or t(lang, "shop_again"), cart)
         elif turn.intent == "order_status":
             if recent_orders and turn.reply.strip():
                 await _send_text(db, creds, conversation, turn.reply)

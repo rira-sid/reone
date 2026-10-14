@@ -1002,3 +1002,19 @@ def test_order_paid_from_a_payment_link_is_acknowledged(client):
     }}).encode()
     r = client.post(f"/payments/webhook/razorpay/{business_id}", content=body, headers=signed("hook-x", body))
     assert r.status_code == 200 and r.json()["status"] == "ignored"
+
+
+def test_shop_answer_is_the_ais_reply_in_the_customers_language(client, fake_ai, fake_whatsapp):
+    _, h = new_seller(client, wa_phone_number_id="PN_LANG", wa_token="t")
+    mutton = add_product(client, h, "Mutton Masala", price=120)
+    start_chat(client, "PN_LANG", "919000000201", lang="en")
+    fake_ai.queue = [fake_ai.turn(intent="shop", language_code="ta", cart=[ai.CartItem(product_id=mutton["id"], quantity=2)],
+                                  reply="ஆம், மட்டன் மசாலா உள்ளது - ₹120.")]
+    whatsapp_message(client, "PN_LANG", "919000000201", text("மட்டன் மசாலா ரெண்டு பாக்கெட் இருக்கா?"))
+    button = fake_whatsapp.payloads[-1]["interactive"]
+    assert button["body"]["text"] == "ஆம், மட்டன் மசாலா உள்ளது - ₹120."
+    assert button["action"]["parameters"]["display_text"] == "இப்போதே வாங்க"  # switched to Tamil
+    assert "lang=ta" in button["action"]["parameters"]["url"]
+
+    whatsapp_message(client, "PN_LANG", "919000000201", text("preservatives irukka?"))  # fake AI: question
+    assert "விற்பனையாளருக்கு" in fake_whatsapp.sent[-1][3]  # "passed to the seller" in Tamil
