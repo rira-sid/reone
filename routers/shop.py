@@ -8,7 +8,7 @@ import json
 import re
 from html import escape
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -46,6 +46,56 @@ def product_image(image_id: int, db: Session = Depends(get_db)):
                     headers={"Cache-Control": "public, max-age=604800, immutable"})
 
 
+@router.get("/media/{image_id}")
+def shop_media(image_id: int, db: Session = Depends(get_db)):
+    """A business's logo / banner."""
+    image = db.get(models.ShopImage, image_id)
+    if not image:
+        raise HTTPException(status_code=404, detail="Not found")
+    return Response(image.data, media_type=image.mime_type,
+                    headers={"Cache-Control": "public, max-age=604800, immutable"})
+
+
+def _record(db: Session, business_id: int, kind: str):
+    db.add(models.ShopEvent(business_id=business_id, kind=kind))
+    db.commit()
+
+
+@router.post("/{business_id}/event")
+async def shop_event(business_id: int, request: Request, db: Session = Depends(get_db)):
+    """Funnel beacons from the shop page (navigator.sendBeacon posts the kind as plain text)."""
+    kind = (await request.body()).decode(errors="ignore").strip()
+    if kind in ("add_to_cart", "checkout_open") and db.get(models.Business, business_id):
+        _record(db, business_id, kind)
+    return Response(status_code=204)
+
+
+def _hex_to_rgb(color: str) -> tuple[int, int, int]:
+    return int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+
+
+def _shade(color: str, factor: float) -> str:
+    """factor < 1 darkens, > 1 lightens (towards white)."""
+    r, g, b = _hex_to_rgb(color)
+    if factor <= 1:
+        r, g, b = (int(v * factor) for v in (r, g, b))
+    else:
+        r, g, b = (int(v + (255 - v) * (factor - 1)) for v in (r, g, b))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def brand_style(business: models.Business) -> str:
+    """CSS overrides that recolour the shop in the business's brand colour (readable on white)."""
+    color = business.brand_color
+    if not color:
+        return ""
+    r, g, b = _hex_to_rgb(color)
+    light = (0.299 * r + 0.587 * g + 0.114 * b) > 150
+    text = _shade(color, 0.55) if light else color  # prices/links stay readable on white cards
+    return (f":root{{--violet:{text};--hdr:linear-gradient(135deg,{color} 0%,{_shade(color, 0.62)} 100%);"
+            f"--soft:{_shade(color, 1.88)}}}")
+
+
 def _nutrition_rows(text: str | None) -> list[list[str]]:
     rows = []
     for line in (text or "").splitlines():
@@ -75,10 +125,16 @@ def _catalog_json(business: models.Business, products: list[models.Product]) -> 
 def catalog(business_id: int, c: str | None = None, lang: str | None = None, add: str | None = None,
             db: Session = Depends(get_db)):
     from chatbot import phone_from_token
+    from routers.settings import shop_image_url
 
     business = db.get(models.Business, business_id)
     if not business:
         raise HTTPException(status_code=404, detail="Shop not found")
+    if not business.is_active:
+        return HTMLResponse("<!doctype html><meta name=viewport content='width=device-width'><title>Unavailable</title>"
+                            "<p style='font:18px system-ui;text-align:center;margin-top:30vh'>This shop is "
+                            "temporarily unavailable.</p>", status_code=503)
+    _record(db, business.id, "view")
     products = (
         db.query(models.Product)
         .filter(models.Product.business_id == business.id, models.Product.is_active.is_(True))
@@ -107,7 +163,9 @@ def catalog(business_id: int, c: str | None = None, lang: str | None = None, add
         "closed_message": business.closed_message or t(code, "closed"),
     }
     data = {
-        "shop": {"id": business.id, "name": business.name, "address": business.address or ""},
+        "shop": {"id": business.id, "name": business.name, "address": business.address or "",
+                 "tagline": business.tagline or "", "about": business.about or "",
+                 "logo": shop_image_url(business.logo_image_id), "banner": shop_image_url(business.banner_image_id)},
         "products": _catalog_json(business, products),
         "rules": rules, "lang": code, "texts": TEXTS[code], "token": c if phone else None,
         "customer": {"name": (customer.name if customer and customer.name != phone else ""),
@@ -121,6 +179,8 @@ def catalog(business_id: int, c: str | None = None, lang: str | None = None, add
                         .replace("__LANG__", code)
                         .replace("__DIR__", "rtl" if code in RTL else "ltr")
                         .replace("__TITLE__", escape(business.name))
+                        .replace("__BRAND_STYLE__", brand_style(business))
+                        .replace("__DESC__", escape(business.tagline or "Order and pay in a minute."))
                         .replace("__DATA__", payload))
 
 
@@ -165,6 +225,8 @@ async def checkout(business_id: int, payload: CheckoutIn, db: Session = Depends(
     if not business:
         raise HTTPException(status_code=404, detail="Shop not found")
     code = lang_code(payload.lang)
+    if not business.is_active:
+        raise HTTPException(status_code=503, detail="This shop is temporarily unavailable")
     if not business.accepting_orders:
         raise HTTPException(status_code=400, detail=business.closed_message or t(code, "closed"))
     phone = phone_from_token(business.id, payload.c) or normalize_phone(payload.phone)
@@ -204,6 +266,7 @@ async def checkout(business_id: int, payload: CheckoutIn, db: Session = Depends(
     pay_method = effective_payment_method(business) if method == "online" else None
     if pay_method in ("upi", "razorpay_link"):
         order.payment_link_url = pay_url(order.id)
+    db.add(models.ShopEvent(business_id=business.id, kind="order"))
     db.commit()
     db.refresh(order)
 
@@ -245,11 +308,11 @@ SHOP_HTML = r"""<!doctype html>
 <meta name="theme-color" content="#7c3aed">
 <title>__TITLE__</title>
 <meta property="og:title" content="__TITLE__">
-<meta property="og:description" content="Shop online - order and pay in a minute.">
+<meta property="og:description" content="__DESC__">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&family=Noto+Sans:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
-:root{--violet:#7c3aed;--pink:#ec4899;--orange:#f97316;--yellow:#facc15;--green:#16a34a;--green-d:#15803d;
+:root{--hdr:linear-gradient(135deg,#7c3aed 0%,#db2777 55%,#f97316 100%);--soft:#f5f0ff;--violet:#7c3aed;--pink:#ec4899;--orange:#f97316;--yellow:#facc15;--green:#16a34a;--green-d:#15803d;
  --ink:#1e1b2e;--muted:#5b5670;--line:#ece8f5;--bg:#faf7ff;--card:#fff;--radius:20px}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html{font-size:17px}
@@ -257,7 +320,7 @@ body{margin:0;font-family:"Noto Sans",system-ui,sans-serif;color:var(--ink);back
 button,input,textarea,select{font:inherit;color:inherit}
 :focus-visible{outline:3px solid var(--orange);outline-offset:2px;border-radius:10px}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
-header{background:linear-gradient(135deg,#7c3aed 0%,#db2777 55%,#f97316 100%);color:#fff;padding:18px 16px 54px;position:relative;overflow:hidden}
+header{background:var(--hdr);background-size:cover;background-position:center;color:#fff;padding:18px 16px 54px;position:relative;overflow:hidden}
 header:after{content:"";position:absolute;right:-40px;top:-40px;width:160px;height:160px;border-radius:50%;background:rgba(255,255,255,.12)}
 .top{display:flex;justify-content:space-between;align-items:center;gap:10px;max-width:960px;margin:0 auto;position:relative;z-index:1}
 .brand{display:flex;align-items:center;gap:12px;min-width:0}
@@ -357,11 +420,19 @@ form input:focus,form textarea:focus{border-color:var(--violet);outline:none;box
 .done .big-emoji{font-size:4rem}
 .done a{display:inline-flex;align-items:center;justify-content:center;margin-top:18px;text-decoration:none}
 footer{text-align:center;color:var(--muted);font-size:.78rem;padding:28px 16px}
-</style></head>
+.logo img{width:100%;height:100%;object-fit:cover;border-radius:16px}
+.tagline{margin:4px 0 0;font-weight:600;font-size:.9rem;opacity:.95}
+.about{background:#fff;border-radius:var(--radius);padding:18px 20px;margin:26px 0 0;box-shadow:0 4px 14px rgba(30,27,46,.07)}
+.about h2{margin-top:0}
+.about p{margin:0;color:var(--muted);line-height:1.6;white-space:pre-line}
+.size[aria-pressed=true],.pay label:has(input:checked){background:var(--soft)}
+.big{background:var(--hdr)}
+</style>
+<style>__BRAND_STYLE__</style></head>
 <body>
 <header>
  <div class="top">
-  <div class="brand"><div class="logo" aria-hidden="true" id="logo"></div><div><h1 id="shopName"></h1><p class="addr" id="shopAddr"></p></div></div>
+  <div class="brand"><div class="logo" aria-hidden="true" id="logo"></div><div><h1 id="shopName"></h1><p class="tagline" id="shopTagline"></p><p class="addr" id="shopAddr"></p></div></div>
   <label class="sr" for="lang">Language</label><select id="lang" class="langsel"></select>
  </div>
  <div class="badges" id="badges"></div>
@@ -369,6 +440,7 @@ footer{text-align:center;color:var(--muted);font-size:.78rem;padding:28px 16px}
 <div class="searchbox"><label class="sr" for="q"></label><input id="q" type="search" autocomplete="off"></div>
 <nav class="chips" id="chips" aria-label="Categories"></nav>
 <main id="main"></main>
+<main><section class="about" id="about" hidden><h2></h2><p></p></section></main>
 <footer>🔒 Secure checkout · powered by RIRAONE</footer>
 <div class="bar" id="bar" hidden><button id="cartBtn" type="button"><span><span class="count" id="cartCount">0</span><span id="cartLabel"></span></span><span id="cartTotal"></span></button></div>
 <div class="sheet" id="sheet" role="dialog" aria-modal="true"><div class="shade" data-close></div><div class="panel" id="panel"></div></div>
@@ -399,7 +471,15 @@ const qtyIn = (pid, vid) => cart.filter((i) => i.product_id === pid && (vid === 
 const subtotal = () => cart.reduce((a, i) => a + unitPrice(i) * i.quantity, 0);
 const deliveryFee = (s) => (!R.delivery_fee || (R.free_above && s >= R.free_above)) ? 0 : R.delivery_fee;
 
+const sent = {};
+function track(kind) {
+  if (sent[kind]) return;
+  sent[kind] = true;
+  try { navigator.sendBeacon(`/shop/${D.shop.id}/event`, kind); } catch (e) {}
+}
+
 function setQty(pid, vid, q) {
+  if (q > qtyIn(pid, vid)) track("add_to_cart");
   const p = byId[pid]; q = Math.max(0, Math.min(q, stockOf(p, vid), 99));
   const line = cart.find((i) => i.product_id === pid && i.variant_id === vid);
   if (line) line.quantity = q; else if (q > 0) cart.push({ product_id: pid, variant_id: vid, quantity: q });
@@ -410,6 +490,14 @@ function header() {
   document.title = D.shop.name;
   $("#shopName").textContent = D.shop.name; $("#shopAddr").textContent = D.shop.address;
   $("#logo").textContent = (D.shop.name.trim()[0] || "S").toUpperCase();
+  if (D.shop.logo) $("#logo").innerHTML = `<img src="${esc(D.shop.logo)}" alt="">`;
+  $("#shopTagline").textContent = D.shop.tagline;
+  if (D.shop.banner) document.querySelector("header").style.backgroundImage =
+    `linear-gradient(180deg,rgba(17,12,34,.35),rgba(17,12,34,.7)),url("${D.shop.banner.replace(/"/g, "")}")`;
+  if (D.shop.about) {
+    const a = $("#about"); a.hidden = false;
+    a.querySelector("h2").textContent = D.shop.name; a.querySelector("p").textContent = D.shop.about;
+  }
   $("#lang").innerHTML = D.languages.map(([c, n]) => `<option value="${c}" ${c === D.lang ? "selected" : ""}>${esc(n)}</option>`).join("");
   $("#lang").onchange = (e) => { const u = new URL(location.href); u.searchParams.set("lang", e.target.value); u.searchParams.delete("add"); location.href = u; };
   const b = [];
@@ -523,6 +611,7 @@ function openProduct(pid) {
 
 function openCart() {
   if (!cart.length) return;
+  track("checkout_open");
   const s = subtotal(), fee = deliveryFee(s), short = R.min_order && s < R.min_order;
   const lines = cart.map((i) => { const p = byId[i.product_id], v = variantOf(p, i.variant_id);
     return `<div class="line">${p.images.length ? `<img src="${esc(p.images[0])}" alt="">` : `<div class="ph" style="--c:${prodColor(p)}">${esc(p.name[0])}</div>`}

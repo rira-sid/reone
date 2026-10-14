@@ -1032,3 +1032,68 @@ def test_bare_bot_command_from_seller_hands_back_latest_chat(client, fake_ai, fa
     assert not [m for m in fake_whatsapp.sent if m[1] == "919000000202" and m[3] == "bot."]
     convo = [c for c in client.get("/conversations", headers=h).json() if c["phone"] == "919000000202"][0]
     assert not convo["needs_seller"]
+
+
+# ---- founder console, branding, funnel -----------------------------------------------------
+
+def test_founder_console_onboards_and_tracks_businesses(client):
+    founder_h = owner_headers(client)
+    assert client.get("/auth/me", headers=founder_h).json()["is_founder"]
+    _, seller_h = new_seller(client)
+    assert not client.get("/auth/me", headers=seller_h).json()["is_founder"]
+    assert client.get("/admin/overview", headers=seller_h).status_code == 403
+
+    r = client.post("/admin/businesses", json={"name": "Anu Bakes", "email": "Anu@Bakes.in"}, headers=founder_h)
+    assert r.status_code == 200, r.text
+    created = r.json()
+    assert created["login_email"] == "anu@bakes.in" and len(created["password"]) >= 8
+    assert client.post("/admin/businesses", json={"name": "Dup", "email": "anu@bakes.in"}, headers=founder_h).status_code == 409
+    bid = created["business"]["id"]
+    login = client.post("/auth/login", json={"email": "anu@bakes.in", "password": created["password"]})
+    assert login.status_code == 200
+
+    # Shop funnel is tracked per business.
+    product = add_product(client, {"Authorization": f"Bearer {login.json()['token']}"}, "Cupcake", price=50)
+    client.get(f"/shop/{bid}")
+    client.get(f"/shop/{bid}")
+    client.post(f"/shop/{bid}/event", content="add_to_cart")
+    client.post(f"/shop/{bid}/event", content="checkout_open")
+    client.post(f"/shop/{bid}/event", content="nonsense")
+    client.post(f"/shop/{bid}/checkout", json={"items": [{"product_id": product["id"], "quantity": 1}], "name": "Ravi",
+                                               "address": "1 Main Road, Salem", "phone": "9876500000"})
+    row = [b for b in client.get("/admin/overview", headers=founder_h).json()["businesses"] if b["id"] == bid][0]
+    assert row["funnel_30d"] == {"views": 2, "carts": 1, "checkouts": 1, "orders": 1, "paid": 0}
+    assert row["orders_30d"] == 1 and row["products"] == 1 and row["setup"]["products"]
+    assert not row["setup"]["whatsapp"]
+
+    # Founder opens the seller's dashboard for support.
+    support = client.post(f"/admin/businesses/{bid}/open", headers=founder_h).json()
+    assert client.get("/business", headers={"Authorization": f"Bearer {support['token']}"}).json()["id"] == bid
+
+    # Pausing stops the shop and the login.
+    assert client.patch(f"/admin/businesses/{bid}", json={"is_active": False}, headers=founder_h).json()["is_active"] is False
+    assert client.get(f"/shop/{bid}").status_code == 503
+    assert client.post("/auth/login", json={"email": "anu@bakes.in", "password": created["password"]}).status_code == 403
+    assert client.patch("/admin/businesses/1", json={"is_active": False}, headers=founder_h).status_code == 400
+    client.patch(f"/admin/businesses/{bid}", json={"is_active": True}, headers=founder_h)
+    assert client.get(f"/shop/{bid}").status_code == 200
+
+
+def test_shop_branding(client):
+    import base64
+    business_id, h = new_seller(client, name="Anu Bakes")
+    assert client.patch("/business", json={"brand_color": "red"}, headers=h).status_code == 400
+    out = client.patch("/business", json={"brand_color": "#E11D48", "tagline": "Fresh every morning",
+                                          "about": "Home bakery since 2019"}, headers=h).json()
+    assert out["brand_color"] == "#E11D48" and out["tagline"] == "Fresh every morning"
+    png = "data:image/png;base64," + base64.b64encode(b"\x89PNG fake").decode()
+    out = client.post("/business/images/logo", json={"data": png}, headers=h).json()
+    assert out["logo_url"].endswith(f"/shop/media/{out['logo_url'].rsplit('/', 1)[1]}")
+    logo = client.get("/shop/media/" + out["logo_url"].rsplit("/", 1)[1])
+    assert logo.status_code == 200 and logo.headers["content-type"] == "image/png"
+    page = client.get(f"/shop/{business_id}").text
+    assert "--violet:#E11D48" in page and "Fresh every morning" in page and "Home bakery since 2019" in page
+    assert client.delete("/business/images/logo", headers=h).json()["logo_url"] is None
+    # A very light brand colour still gives readable (darker) text.
+    client.patch("/business", json={"brand_color": "#FDE68A"}, headers=h)
+    assert "--violet:#FDE68A" not in client.get(f"/shop/{business_id}").text
