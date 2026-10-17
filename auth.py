@@ -281,8 +281,16 @@ class MeOut(BaseModel):
     business_id: int
     business_name: str
     slug: str | None = None
+    logo_url: str | None = None
+    brand_color: str | None = None
     role: str
     name: str | None
+
+
+def _logo_url(business: models.Business) -> str | None:
+    from routers.settings import shop_image_url
+
+    return shop_image_url(business.logo_image_id)
 
 
 @router.get("/me", response_model=MeOut)
@@ -291,6 +299,8 @@ def me(user: CurrentUser = Depends(current_user)):
         "business_id": user.business.id,
         "business_name": user.business.name,
         "slug": user.business.slug,
+        "logo_url": _logo_url(user.business),
+        "brand_color": user.business.brand_color,
         "role": "owner" if user.is_owner else "staff",
         "name": user.staff.name if user.staff else None,
     }

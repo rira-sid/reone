@@ -424,3 +424,20 @@ class PlanPrice(Base):
 
     plan = Column(String, primary_key=True)
     price = Column(Float, nullable=False)
+
+
+class ProductTranslation(Base):
+    """A product's texts in one customer language (catalog_i18n.py)."""
+    __tablename__ = "product_translations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
+    lang = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    category = Column(String, nullable=True)
+    nutrition = Column(Text, nullable=True)
+    sizes_json = Column(Text, nullable=True)  # labels in the same order as the product's sizes
+    source_hash = Column(String, nullable=True)  # English text it was made from
+    edited = Column(Boolean, default=False, nullable=False)  # seller corrected it by hand
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

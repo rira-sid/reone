@@ -1,7 +1,10 @@
 import base64
 import binascii
 
-from fastapi import APIRouter, Depends, HTTPException
+import json
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import models
@@ -99,8 +102,23 @@ def list_products(db: Session = Depends(get_db), business: models.Business = Dep
     return [product_out(p) for p in products]
 
 
+async def _translate_soon(product_id: int):
+    """Right after a save, so the shop shows the new text in every language within seconds."""
+    import catalog_i18n
+    from database import SessionLocal
+
+    with SessionLocal() as db:
+        product = db.get(models.Product, product_id)
+        if product:
+            try:
+                await catalog_i18n.translate_product(db, product)
+            except Exception as e:  # noqa: BLE001 - the background loop retries
+                print(f"TRANSLATION DEFERRED (product {product_id}):", repr(e))
+
+
 @router.post("", response_model=schemas.ProductOut)
-def create_product(payload: schemas.ProductCreate, db: Session = Depends(get_db), business: models.Business = Depends(current_business)):
+def create_product(payload: schemas.ProductCreate, background: BackgroundTasks, db: Session = Depends(get_db),
+                   business: models.Business = Depends(current_business)):
     data = payload.model_dump(exclude={"variants"})
     product = models.Product(business_id=business.id, **data)
     db.add(product)
@@ -109,11 +127,13 @@ def create_product(payload: schemas.ProductCreate, db: Session = Depends(get_db)
         _apply_variants(db, product, payload.variants)
     db.commit()
     db.refresh(product)
+    background.add_task(_translate_soon, product.id)
     return product_out(product)
 
 
 @router.patch("/{product_id}", response_model=schemas.ProductOut)
-def update_product(product_id: int, payload: schemas.ProductUpdate, db: Session = Depends(get_db), business: models.Business = Depends(current_business)):
+def update_product(product_id: int, payload: schemas.ProductUpdate, background: BackgroundTasks,
+                   db: Session = Depends(get_db), business: models.Business = Depends(current_business)):
     product = _get_product(db, business, product_id)
     fields = payload.model_dump(exclude_unset=True)
     variants = fields.pop("variants", None)
@@ -123,6 +143,7 @@ def update_product(product_id: int, payload: schemas.ProductUpdate, db: Session 
         _apply_variants(db, product, payload.variants)
     db.commit()
     db.refresh(product)
+    background.add_task(_translate_soon, product.id)
     return product_out(product)
 
 
@@ -178,3 +199,70 @@ def make_cover(product_id: int, image_id: int, db: Session = Depends(get_db),
     db.commit()
     db.refresh(product)
     return product_out(product)
+
+
+# ---- translations --------------------------------------------------------------------------
+
+@router.get("/{product_id}/translations")
+def get_translations(product_id: int, db: Session = Depends(get_db), business: models.Business = Depends(current_business)):
+    import catalog_i18n
+
+    product = _get_product(db, business, product_id)
+    rows = {r.lang: r for r in db.query(models.ProductTranslation).filter(
+        models.ProductTranslation.product_id == product.id).all()}
+    h = catalog_i18n.source_hash(product)
+    out = []
+    for code in catalog_i18n.TARGETS:
+        row = rows.get(code)
+        item = catalog_i18n.row_out(row, code)
+        item["outdated"] = bool(row and row.source_hash != h)
+        out.append(item)
+    return {"english": catalog_i18n.english(product), "languages": out}
+
+
+class TranslationIn(BaseModel):
+    name: str
+    description: str = ""
+    category: str = ""
+    nutrition: str = ""
+    sizes: list[str] = []
+
+
+@router.put("/{product_id}/translations/{lang}")
+def save_translation(product_id: int, lang: str, payload: TranslationIn, db: Session = Depends(get_db),
+                     business: models.Business = Depends(current_business)):
+    """The seller's own wording for one language - kept until they ask to translate again."""
+    import catalog_i18n
+
+    product = _get_product(db, business, product_id)
+    if lang not in catalog_i18n.TARGETS:
+        raise HTTPException(status_code=404, detail="Unknown language")
+    if not payload.name.strip():
+        raise HTTPException(status_code=400, detail="The name can't be empty")
+    sizes = [s.strip() for s in payload.sizes]
+    if len(sizes) != len(product.active_variants) or any(not s for s in sizes):
+        sizes = [v.label for v in product.active_variants]
+    row = db.query(models.ProductTranslation).filter(models.ProductTranslation.product_id == product.id,
+                                                     models.ProductTranslation.lang == lang).first()
+    row = row or models.ProductTranslation(product_id=product.id, lang=lang)
+    row.name, row.description = payload.name.strip()[:200], payload.description.strip()
+    row.category, row.nutrition = payload.category.strip()[:80], payload.nutrition.strip()
+    row.sizes_json = json.dumps(sizes, ensure_ascii=False)
+    row.source_hash, row.edited = catalog_i18n.source_hash(product), True
+    db.add(row)
+    db.commit()
+    return catalog_i18n.row_out(row, lang)
+
+
+@router.post("/{product_id}/translations/refresh")
+async def refresh_translations(product_id: int, db: Session = Depends(get_db),
+                               business: models.Business = Depends(current_business)):
+    """Translate every language again from the English text (replaces hand edits)."""
+    import catalog_i18n
+
+    product = _get_product(db, business, product_id)
+    try:
+        written = await catalog_i18n.translate_product(db, product, force=True)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail="The translator is busy - please try again in a minute") from e
+    return {"languages": written}

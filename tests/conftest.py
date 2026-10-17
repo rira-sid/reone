@@ -86,3 +86,21 @@ def fake_ai(monkeypatch):
     fake = FakeAI()
     monkeypatch.setattr(ai, "run_turn", fake.run_turn)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def fake_translator(monkeypatch):
+    """Product translations without calling Gemini: "[ta] Chicken Masala"."""
+    import catalog_i18n
+
+    calls = []
+
+    async def ask(source, shop_name):
+        calls.append(source["name"])
+        return {code: catalog_i18n._LangText(
+            lang=code, name=f"[{code}] {source['name']}", description=f"[{code}] {source['description']}" if source["description"] else "",
+            category=f"[{code}] {source['category']}" if source["category"] else "", nutrition=source["nutrition"],
+            sizes=[f"[{code}] {s}" for s in source["sizes"]]) for code in catalog_i18n.TARGETS}
+
+    monkeypatch.setattr(catalog_i18n, "_ask_gemini", ask)
+    return calls

@@ -73,3 +73,16 @@ def track_visit(payload: VisitIn, request: Request, background: BackgroundTasks)
         background.add_task(record_visit, request_info(request), payload.page, None,
                             traffic_source(payload.referrer, payload.src, request.headers.get("user-agent")))
     return Response(status_code=204)
+
+
+@router.get("/brand/{shop_key}")
+def brand(shop_key: str, db: Session = Depends(get_db)):
+    """Public: name, logo and colour for a shop's dashboard login page (/<shop address>)."""
+    from routers.settings import shop_image_url
+    from slugs import find
+
+    business = find(db, shop_key)
+    if not business or business.approval_status == "rejected":
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"name": business.name, "slug": business.slug, "logo_url": shop_image_url(business.logo_image_id),
+            "brand_color": business.brand_color, "tagline": business.tagline}

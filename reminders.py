@@ -111,6 +111,10 @@ async def reminder_loop():
                 if count:
                     print(f"Sent {count} billing notice(s)")
                 await check_whatsapp_health(db)
+            from catalog_i18n import catch_up
+
+            with SessionLocal() as db:
+                await catch_up(db)
         except Exception as e:  # never let the loop die
             print("REMINDER LOOP ERROR:", repr(e))
         await asyncio.sleep(CHECK_EVERY_SECONDS)

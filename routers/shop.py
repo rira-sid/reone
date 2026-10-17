@@ -107,16 +107,33 @@ def _nutrition_rows(text: str | None) -> list[list[str]]:
     return rows
 
 
-def _catalog_json(business: models.Business, products: list[models.Product]) -> list[dict]:
+def _catalog_json(business: models.Business, products: list[models.Product], tr: dict | None = None) -> list[dict]:
+    """Products for the shop page, in the customer's language where a translation exists (`tr`)."""
     from routers.products import image_url
 
+    tr = tr or {}
+    # One label per category, so every product of a category groups under the same heading.
+    category_label = {}
+    for p in products:
+        row = tr.get(p.id)
+        if p.category and row and row.category and p.category not in category_label:
+            category_label[p.category] = row.category
     out = []
     for p in sorted(products, key=lambda p: ((p.category or "~").lower(), p.name.lower())):
-        variants = [{"id": v.id, "label": v.label, "price": v.price, "stock": v.stock} for v in p.active_variants]
+        row = tr.get(p.id)
+        sizes = json.loads(row.sizes_json or "[]") if row else []
+        active = p.active_variants
+        if len(sizes) != len(active):
+            sizes = [v.label for v in active]
+        variants = [{"id": v.id, "label": label, "price": v.price, "stock": v.stock} for v, label in zip(active, sizes)]
         out.append({
-            "id": p.id, "name": p.name, "category": p.category or "", "description": p.description or "",
+            "id": p.id, "name": (row.name if row else p.name),
+            "alt": p.name if row else "",  # English name, so searching in English still works
+            "category": category_label.get(p.category, p.category or ""),
+            "description": (row.description if row and row.description else p.description or ""),
             "unit": p.unit or "", "price": p.price, "stock": p.stock, "variants": variants,
-            "images": [image_url(i) for i in p.images], "nutrition": _nutrition_rows(p.nutrition),
+            "images": [image_url(i) for i in p.images],
+            "nutrition": _nutrition_rows(row.nutrition if row and row.nutrition else p.nutrition),
         })
     return out
 
@@ -124,9 +141,9 @@ def _catalog_json(business: models.Business, products: list[models.Product]) -> 
 @router.get("/{shop_key}", response_class=HTMLResponse)
 def catalog(shop_key: str, request: Request, background: BackgroundTasks, c: str | None = None,
             lang: str | None = None, add: str | None = None, src: str | None = None, db: Session = Depends(get_db)):
+    from catalog_i18n import translations_for
     from chatbot import phone_from_token
     from routers.settings import shop_image_url
-
     from slugs import find
 
     business = find(db, shop_key)
@@ -172,7 +189,7 @@ def catalog(shop_key: str, request: Request, background: BackgroundTasks, c: str
         "shop": {"id": business.id, "name": business.name, "address": business.address or "",
                  "tagline": business.tagline or "", "about": business.about or "",
                  "logo": shop_image_url(business.logo_image_id), "banner": shop_image_url(business.banner_image_id)},
-        "products": _catalog_json(business, products),
+        "products": _catalog_json(business, products, translations_for(db, products, code)),
         "rules": rules, "lang": code, "texts": TEXTS[code], "token": c if phone else None,
         "customer": {"name": (customer.name if customer and customer.name != phone else ""),
                      "address": customer.address if customer else "", "phone": phone or ""},
@@ -546,7 +563,7 @@ function renderGrid() {
   const main = $("#main");
   if (!D.products.length) { main.innerHTML = `<p class="empty">${esc(T.no_products)}</p>`; return; }
   const list = D.products.filter((p) => (!activeCat || p.category === activeCat) &&
-    (!query || (p.name + " " + p.description + " " + p.category).toLowerCase().includes(query)));
+    (!query || (p.name + " " + (p.alt || "") + " " + p.description + " " + p.category).toLowerCase().includes(query)));
   const groups = {};
   list.forEach((p) => (groups[p.category] ||= []).push(p));
   let html = R.open ? "" : `<div class="notice">⏸️ ${esc(R.closed_message)}</div>`;
