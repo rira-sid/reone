@@ -1,5 +1,6 @@
 """Background jobs, every minute: one gentle reminder for unpaid orders (inside WhatsApp's 24h
-window), auto-cancel of orders still unpaid after a day, and escalating seller alerts."""
+window), auto-cancel of orders still unpaid after a day, escalating seller alerts, RIRAONE plan
+reminders / auto-pause (billing.py) and the 6-hourly WhatsApp connection check."""
 import asyncio
 import os
 from datetime import datetime, timedelta, timezone
@@ -103,6 +104,13 @@ async def reminder_loop():
                 print(f"Cancelled {count} unpaid order(s)")
             with SessionLocal() as db:
                 await escalate_waiting(db)
+            from billing import billing_tick, check_whatsapp_health
+
+            with SessionLocal() as db:
+                count = await billing_tick(db)
+                if count:
+                    print(f"Sent {count} billing notice(s)")
+                await check_whatsapp_health(db)
         except Exception as e:  # never let the loop die
             print("REMINDER LOOP ERROR:", repr(e))
         await asyncio.sleep(CHECK_EVERY_SECONDS)

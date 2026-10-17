@@ -96,6 +96,12 @@ async def razorpay_webhook(business_id: int, request: Request, db: Session = Dep
     # Row lock (Postgres) so two near-simultaneous deliveries of the same event can't both
     # pass the is_paid check below. SQLite ignores FOR UPDATE, which is fine for local dev.
     orders = db.query(models.Order).filter(models.Order.business_id == business.id).with_for_update()
+    if kind == "payment_link.paid" and business.id == DEFAULT_BUSINESS_ID and str(
+            (event.get("payload", {}).get("payment_link", {}).get("entity") or {}).get("reference_id", "")).startswith("SUB-"):
+        # A seller paying for their RIRAONE plan (billing.py) - on RIRAONE's own Razorpay account.
+        from billing import handle_link_paid
+
+        return await handle_link_paid(db, event)
     if kind == "payment_link.paid":  # paid through a Razorpay payment link
         try:
             order_id = int(event["payload"]["payment_link"]["entity"]["reference_id"])

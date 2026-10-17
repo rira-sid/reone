@@ -32,7 +32,13 @@ FastAPI service behind the WhatsApp ordering bot and the seller dashboard.
 | `DASHBOARD_PASSWORD` | Recommended | Password for the original business (id 1). Until set, business 1's dashboard API is open to anyone. |
 | `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_TOKEN` | For business 1 | The original business's WhatsApp number, used when its Settings page is empty. |
 | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | For business 1 | Same fallback for Razorpay. Other sellers enter their own keys in Settings. |
-| `SIGNUP_CODE` | For new sellers | Invite code new sellers type to create an account. Sign-up is closed unless this and `SECRET_KEY` are set. |
+| `SIGNUP_CODE` | Optional | Invite code: sellers who type it are approved at once. Without it, sign-ups wait for the founder's approval. |
+| `OPEN_SIGNUP` | Optional | `0` = sign-up only with the invite code. Default: open (needs approval). Sign-up always needs `SECRET_KEY`. |
+| `TRIAL_DAYS` | Optional | Free trial for new sellers, default `14`. |
+| `BILLING_GRACE_DAYS` | Optional | Days after the due date before an unpaid shop pauses, default `7`. |
+| `SELLER_DASHBOARD_URL` | Optional | Linked in billing messages, default `https://reone-dashboard.vercel.app`. |
+| `FOUNDER_ALERT_PHONE` | Optional | Founder's WhatsApp for alerts, if not set in the founder console. |
+| `GEO_LOOKUP` | Optional | `0` turns off IP → country/city lookups (ipwho.is, ip-api.com) for sign-ins and visits. |
 | `PUBLIC_BASE_URL` | Optional | Public URL of this backend, used in invoice links. Default `https://reone-backend.onrender.com`. |
 | `WA_TEMPLATE_ORDER_UPDATE`, `WA_TEMPLATE_ORDER_UPDATE_LANG` | Optional | Approved template for order updates sent more than 24h after the customer's last message. Default `order_update` / `en` - see `WHATSAPP_TEMPLATES.md`. |
 

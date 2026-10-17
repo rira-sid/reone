@@ -40,3 +40,28 @@ New customer question for your shop. From: {{1}} ({{2}}). Question: {{3}}. Swipe
 
 Sample: `{{1}}` = `Priya`, `{{2}}` = `+91 98765 43210`, `{{3}}` = `Is the chicken masala spicy?`.
 Override with `WA_TEMPLATE_SELLER_ALERT` / `WA_TEMPLATE_SELLER_ALERT_LANG`.
+
+## `billing_reminder` (Utility, English) - submitted via API 2026-10-17
+
+RIRAONE plan messages to a seller (trial ending, payment due / overdue, shop paused, approved,
+announcements) when the seller hasn't messaged RIRAONE's number in the last 24 hours. Sent by
+billing.py from business 1's number.
+
+```
+Hello {{1}}, this is RIRAONE. Update on your plan: {{2}}. You can pay or check your account here: {{3}} Thank you.
+```
+
+Sample: `{{1}}` = `Anu Home Bakes`, `{{2}}` = `free trial ends on 20 Oct`, `{{3}}` = payment link.
+Override with `WA_TEMPLATE_BILLING`.
+
+## `founder_alert` (Utility, English) - submitted via API 2026-10-17
+
+Alerts to the founder's own WhatsApp (founder console → Settings → alert number): new sign-ups,
+plan payments, auto-paused shops, broken WhatsApp connections, repeated wrong passwords, logins
+from a new country.
+
+```
+RIRAONE founder alert: {{1}}. Open your founder console for the details.
+```
+
+Override with `WA_TEMPLATE_FOUNDER_ALERT`.

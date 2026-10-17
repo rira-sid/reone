@@ -3,11 +3,12 @@ Only a founder login (founder_auth.py) can call these - shop logins never can.""
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+import billing
 import models
 from auth import email_taken, hash_password, issue_token
 from founder_auth import current_founder
@@ -16,6 +17,7 @@ from database import get_db
 from routers.insights import funnel
 from routers.invoices import PUBLIC_BASE_URL
 from routers.pay import effective_payment_method
+from tracking import audit, client_ip
 
 router = APIRouter(prefix="/admin", tags=["founder"], dependencies=[Depends(current_founder)])
 
@@ -49,6 +51,13 @@ def _row(db: Session, business: models.Business, now: datetime) -> dict:
         models.Conversation.business_id == business.id).scalar()
     last_activity = max([d for d in (last_order, _utc(last_chat)) if d], default=None)
     steps = setup_steps(db, business)
+    messages = db.query(models.Message.sender, func.count(models.Message.id)).join(models.Conversation).filter(
+        models.Conversation.business_id == business.id, models.Message.created_at >= since
+    ).group_by(models.Message.sender).all()
+    messages = dict(messages)
+    last_login = db.query(func.max(models.LoginEvent.created_at)).filter(
+        models.LoginEvent.site == "seller", models.LoginEvent.business_id == business.id,
+        models.LoginEvent.success.is_(True)).scalar()
     return {
         "id": business.id,
         "name": business.name,
@@ -56,6 +65,21 @@ def _row(db: Session, business: models.Business, now: datetime) -> dict:
         "phone": business.phone,
         "created_at": business.created_at,
         "is_active": business.is_active,
+        "paused_reason": business.paused_reason,
+        "approval_status": business.approval_status,
+        "signup_source": business.signup_source,
+        "billing": billing.status(db, business, now),
+        "usage_30d": {
+            "customer_messages": messages.get("customer", 0),
+            "bot_replies": messages.get("ai", 0),
+            "seller_replies": messages.get("seller", 0),
+            "chats": db.query(models.Conversation).filter(
+                models.Conversation.business_id == business.id,
+                models.Conversation.last_customer_message_at >= since).count(),
+        },
+        "last_login_at": _utc(last_login),
+        "wa_health": business.wa_health,
+        "wa_health_detail": business.wa_health_detail,
         "is_founder_shop": business.id == DEFAULT_BUSINESS_ID,
         "setup": steps,
         "setup_done": sum(steps.values()),
@@ -90,6 +114,10 @@ def overview(db: Session = Depends(get_db)):
         "revenue_30d": round(sum(r["revenue_30d"] for r in rows), 2),
         "views_30d": sum(r["funnel_30d"]["views"] for r in rows),
         "new_30d": sum(1 for b in businesses if b.created_at and now - _utc(b.created_at) < timedelta(days=30)),
+        "pending_approval": sum(1 for r in rows if r["approval_status"] == "pending"),
+        "overdue": sum(1 for r in rows if r["billing"]["state"] in ("overdue", "paused")),
+        "trials": sum(1 for r in rows if r["billing"]["plan"] == "trial"),
+        "paying": sum(1 for r in rows if r["billing"]["plan"] in billing.PAID_PLANS and r["billing"]["state"] in ("active", "due_soon")),
     }
     return {"totals": totals, "businesses": rows}
 
@@ -102,7 +130,8 @@ class NewBusiness(BaseModel):
 
 
 @router.post("/businesses")
-def create_business(payload: NewBusiness, db: Session = Depends(get_db)):
+def create_business(payload: NewBusiness, request: Request, db: Session = Depends(get_db),
+                    founder: models.FounderUser = Depends(current_founder)):
     """Founder onboards a seller. The password is returned once, to pass on to the seller."""
     email = payload.email.strip().lower()
     name = payload.name.strip()
@@ -115,9 +144,11 @@ def create_business(payload: NewBusiness, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     business = models.Business(name=name, owner_email=email, password_hash=hash_password(password),
                                phone=(payload.phone or "").strip() or None)
+    billing.start_trial(business, "founder")
     db.add(business)
     db.commit()
     db.refresh(business)
+    audit(db, founder, "add business", business.id, f"{name} <{email}>", client_ip(request))
     return {"business": _row(db, business, datetime.now(timezone.utc)), "login_email": email, "password": password}
 
 
@@ -126,24 +157,29 @@ class BusinessStatus(BaseModel):
 
 
 @router.patch("/businesses/{business_id}")
-def set_status(business_id: int, payload: BusinessStatus, db: Session = Depends(get_db)):
+def set_status(business_id: int, payload: BusinessStatus, request: Request, db: Session = Depends(get_db),
+               founder: models.FounderUser = Depends(current_founder)):
     business = db.get(models.Business, business_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     if business.id == DEFAULT_BUSINESS_ID and not payload.is_active:
         raise HTTPException(status_code=400, detail="The founder's own shop can't be paused")
     business.is_active = payload.is_active
+    business.paused_reason = None if payload.is_active else "founder"
     db.commit()
+    audit(db, founder, "resume" if payload.is_active else "pause", business.id, None, client_ip(request))
     return _row(db, business, datetime.now(timezone.utc))
 
 
 @router.post("/businesses/{business_id}/open")
-def open_dashboard(business_id: int, db: Session = Depends(get_db)):
+def open_dashboard(business_id: int, request: Request, db: Session = Depends(get_db),
+                   founder: models.FounderUser = Depends(current_founder)):
     """A short-lived owner login for that business, so the founder can see and fix its setup."""
     business = db.get(models.Business, business_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    if not business.is_active:
+    if not business.is_active and business.paused_reason != "billing":
         raise HTTPException(status_code=400, detail="Resume the business first")
     token, expires_at = issue_token(business.id, ttl=8 * 3600)
+    audit(db, founder, "support login", business.id, "opened their dashboard (8h)", client_ip(request))
     return {"token": token, "expires_at": expires_at, "business_id": business.id, "business_name": business.name}

@@ -271,6 +271,9 @@ async def handle_incoming(
         except Exception as e:
             # API outage, missing key, bad output... the seller answers instead.
             print("AI ERROR:", repr(e))
+            from tracking import log_event
+
+            log_event("ai", f"AI failed, chat sent to the seller: {e!r}"[:500], business_id)
             await route_to_seller(db, business, creds, conversation, text)
             return
 

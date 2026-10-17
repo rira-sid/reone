@@ -57,7 +57,31 @@ class Business(Base):
     banner_image_id = Column(Integer, nullable=True)
 
     # The founder can pause a business: its shop and WhatsApp bot stop, its login is refused.
+    # paused_reason "billing" = paused automatically for an unpaid plan; the owner can still log in to pay.
     is_active = Column(Boolean, default=True, nullable=False)
+    paused_reason = Column(String, nullable=True)
+
+    # Enrolment: self sign-ups wait for the founder's approval ("pending"); their dashboard works,
+    # but the shop page and WhatsApp bot stay off until approved. "rejected" can't log in.
+    approval_status = Column(String, default="approved", nullable=False)
+    signup_source = Column(String, nullable=True)  # "founder" | "invite" | "self"
+
+    # RIRAONE plan (see billing.py). paid_until = end of the trial or of the last paid month.
+    plan = Column(String, nullable=True)
+    trial_ends_at = Column(DateTime(timezone=True), nullable=True)
+    paid_until = Column(DateTime(timezone=True), nullable=True)
+    billing_exempt = Column(Boolean, default=False, nullable=False)  # founder's own shop, free pilots
+    auto_pause = Column(Boolean, default=True, nullable=False)  # pause the shop when the grace period ends
+
+    # Result of the periodic WhatsApp connection check (billing.check_whatsapp_health).
+    wa_health = Column(String, nullable=True)  # "ok" | "error" | None (not connected / not checked)
+    wa_health_detail = Column(Text, nullable=True)
+    wa_health_checked_at = Column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def is_live(self) -> bool:
+        """Customers can use the shop page and WhatsApp bot."""
+        return self.is_active and self.approval_status == "approved"
 
     products = relationship("Product", back_populates="business")
     orders = relationship("Order", back_populates="business")
@@ -257,6 +281,7 @@ class FounderUser(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, nullable=False, unique=True)
     password_hash = Column(String, nullable=False)
+    alert_phone = Column(String, nullable=True)  # founder's WhatsApp for sign-up / security / billing alerts
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -285,3 +310,115 @@ class StaffUser(Base):
     email = Column(String, nullable=False, index=True)
     password_hash = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class LoginEvent(Base):
+    """Every sign-in attempt on the seller dashboard and the founder console."""
+    __tablename__ = "login_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    site = Column(String, nullable=False)  # "seller" | "founder"
+    business_id = Column(Integer, nullable=True, index=True)
+    staff_id = Column(Integer, nullable=True)
+    email = Column(String, nullable=True)
+    success = Column(Boolean, nullable=False)
+    ip = Column(String, nullable=True)
+    country = Column(String, nullable=True)
+    country_code = Column(String, nullable=True)
+    city = Column(String, nullable=True)
+    device = Column(String, nullable=True)  # "Mobile · Android · Chrome"
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class Visit(Base):
+    """A page visit: a shop page, or RIRAONE's own sign-up / login page. No IP is kept - only
+    the country/city it resolved to."""
+    __tablename__ = "visits"
+
+    id = Column(Integer, primary_key=True, index=True)
+    page = Column(String, nullable=False, index=True)  # "shop" | "signup" | "login"
+    business_id = Column(Integer, nullable=True, index=True)
+    country = Column(String, nullable=True)
+    country_code = Column(String, nullable=True)
+    city = Column(String, nullable=True)
+    device = Column(String, nullable=True)
+    source = Column(String, nullable=True)  # "WhatsApp" | "Instagram" | "Direct" | site name
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class PlanInvoice(Base):
+    """A RIRAONE subscription charge to a seller (one month of a plan)."""
+    __tablename__ = "plan_invoices"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False, index=True)
+    plan = Column(String, nullable=False)
+    amount = Column(Float, nullable=False)
+    status = Column(String, default="pending", nullable=False)  # "pending" | "paid" | "cancelled"
+    method = Column(String, nullable=True)  # "razorpay" | "manual"
+    razorpay_link_id = Column(String, nullable=True)
+    link_url = Column(String, nullable=True)
+    razorpay_payment_id = Column(String, nullable=True)
+    note = Column(Text, nullable=True)
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    business = relationship("Business")
+
+
+class BillingNotice(Base):
+    """A billing reminder already sent, so each one goes out once per billing period."""
+    __tablename__ = "billing_notices"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False, index=True)
+    period = Column(String, nullable=False)  # paid_until date the notice is about
+    stage = Column(String, nullable=False)  # "soon" | "due" | "overdue" | "paused"
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FounderAudit(Base):
+    """What the founder did, and when - a trail for pauses, plan changes, support logins..."""
+    __tablename__ = "founder_audit"
+
+    id = Column(Integer, primary_key=True, index=True)
+    founder_id = Column(Integer, nullable=True)
+    action = Column(String, nullable=False)
+    business_id = Column(Integer, nullable=True, index=True)
+    detail = Column(Text, nullable=True)
+    ip = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class Announcement(Base):
+    """A message from the founder to all sellers (business_id None) or one seller, shown as a
+    banner in their dashboard and optionally sent on WhatsApp."""
+    __tablename__ = "announcements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, nullable=True, index=True)
+    title = Column(String, nullable=False)
+    body = Column(Text, nullable=True)
+    level = Column(String, default="info", nullable=False)  # "info" | "warning"
+    is_active = Column(Boolean, default=True, nullable=False)
+    whatsapp_sent = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class SystemEvent(Base):
+    """Problems worth the founder's attention: AI failures, WhatsApp send errors, billing errors."""
+    __tablename__ = "system_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source = Column(String, nullable=False)  # "ai" | "whatsapp" | "billing" | "payments"
+    business_id = Column(Integer, nullable=True, index=True)
+    message = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class PlanPrice(Base):
+    """Founder-set price for a plan (monthly / quarterly / annual). Missing = billing.PLANS default."""
+    __tablename__ = "plan_prices"
+
+    plan = Column(String, primary_key=True)
+    price = Column(Float, nullable=False)

@@ -12,7 +12,7 @@ import base64
 import hmac
 import time
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -88,18 +88,35 @@ async def setup(payload: FounderSetup, db: Session = Depends(get_db)):
 
 
 @router.post("/login")
-async def login(payload: FounderLogin, db: Session = Depends(get_db)):
-    founder = db.query(models.FounderUser).filter(
-        func.lower(models.FounderUser.email) == payload.email.strip().lower()).first()
-    if founder and verify_password(payload.password, founder.password_hash):
+async def login(payload: FounderLogin, request: Request, background: BackgroundTasks, db: Session = Depends(get_db)):
+    from tracking import record_login, request_info
+
+    email = payload.email.strip().lower()
+    founder = db.query(models.FounderUser).filter(func.lower(models.FounderUser.email) == email).first()
+    success = bool(founder and verify_password(payload.password, founder.password_hash))
+    if success:
+        background.add_task(record_login, request_info(request), "founder", email, True)
         return _issue(founder.id)
+    await record_login(request_info(request), "founder", email, False)  # background tasks skip error responses
     await asyncio.sleep(1.5)  # slow down guessing
     raise HTTPException(status_code=401, detail="Wrong email or password")
 
 
 @router.get("/me")
 def me(founder: models.FounderUser = Depends(current_founder)):
-    return {"email": founder.email}
+    return {"email": founder.email, "alert_phone": founder.alert_phone}
+
+
+class FounderSettings(BaseModel):
+    alert_phone: str | None = None
+
+
+@router.patch("/me")
+def update_me(payload: FounderSettings, founder: models.FounderUser = Depends(current_founder),
+              db: Session = Depends(get_db)):
+    founder.alert_phone = (payload.alert_phone or "").strip() or None
+    db.commit()
+    return {"email": founder.email, "alert_phone": founder.alert_phone}
 
 
 class PasswordChange(BaseModel):

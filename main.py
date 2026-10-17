@@ -21,6 +21,7 @@ from chatbot import handle_incoming
 from migrate import add_missing_columns
 from reminders import reminder_loop
 from routers import products, orders, payments, conversations, settings, invoices, insights, shop, pay, admin
+from routers import account, founder_ops
 from routers.pay import handle_payment_status
 
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
@@ -32,6 +33,9 @@ with SessionLocal() as db:
     if not db.query(models.Business).filter(models.Business.id == DEFAULT_BUSINESS_ID).first():
         db.add(models.Business(id=DEFAULT_BUSINESS_ID, name="My Business"))
         db.commit()
+    import billing
+
+    billing.backfill(db)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -65,6 +69,8 @@ app.include_router(insights.router)
 app.include_router(shop.router)
 app.include_router(pay.router)
 app.include_router(admin.router)
+app.include_router(founder_ops.router)
+app.include_router(account.router)
 # Payment app logos and the UPI banner WhatsApp loads as a message header image.
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
@@ -138,8 +144,8 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
             if not business:
                 print(f"No business connected to phone_number_id {phone_number_id}, ignoring")
                 continue
-            if not business.is_active:
-                print(f"Business {business.id} is paused, ignoring messages")
+            if not business.is_live:
+                print(f"Business {business.id} is paused or awaiting approval, ignoring messages")
                 continue
 
             contacts = value.get("contacts") or [{}]

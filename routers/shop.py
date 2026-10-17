@@ -8,7 +8,7 @@ import json
 import re
 from html import escape
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -122,19 +122,23 @@ def _catalog_json(business: models.Business, products: list[models.Product]) -> 
 
 
 @router.get("/{business_id}", response_class=HTMLResponse)
-def catalog(business_id: int, c: str | None = None, lang: str | None = None, add: str | None = None,
-            db: Session = Depends(get_db)):
+def catalog(business_id: int, request: Request, background: BackgroundTasks, c: str | None = None,
+            lang: str | None = None, add: str | None = None, src: str | None = None, db: Session = Depends(get_db)):
     from chatbot import phone_from_token
     from routers.settings import shop_image_url
 
     business = db.get(models.Business, business_id)
     if not business:
         raise HTTPException(status_code=404, detail="Shop not found")
-    if not business.is_active:
+    if not business.is_live:
         return HTMLResponse("<!doctype html><meta name=viewport content='width=device-width'><title>Unavailable</title>"
                             "<p style='font:18px system-ui;text-align:center;margin-top:30vh'>This shop is "
                             "temporarily unavailable.</p>", status_code=503)
     _record(db, business.id, "view")
+    from tracking import record_visit, request_info, traffic_source
+
+    background.add_task(record_visit, request_info(request), "shop", business.id,
+                        traffic_source(request.headers.get("referer"), src, request.headers.get("user-agent")))
     products = (
         db.query(models.Product)
         .filter(models.Product.business_id == business.id, models.Product.is_active.is_(True))
@@ -225,7 +229,7 @@ async def checkout(business_id: int, payload: CheckoutIn, db: Session = Depends(
     if not business:
         raise HTTPException(status_code=404, detail="Shop not found")
     code = lang_code(payload.lang)
-    if not business.is_active:
+    if not business.is_live:
         raise HTTPException(status_code=503, detail="This shop is temporarily unavailable")
     if not business.accepting_orders:
         raise HTTPException(status_code=400, detail=business.closed_message or t(code, "closed"))

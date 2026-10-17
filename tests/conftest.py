@@ -15,6 +15,7 @@ os.environ.update(
     WHATSAPP_VERIFY_TOKEN="verify-me",
     RAZORPAY_WEBHOOK_SECRET="legacy-webhook-secret",
     ANTHROPIC_API_KEY="test-key-not-used",
+    GEO_LOOKUP="0",
 )
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
