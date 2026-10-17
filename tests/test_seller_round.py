@@ -91,3 +91,19 @@ def test_brand_for_white_label_login(client):
     b = client.get(f"/brand/{me['slug']}").json()
     assert b["name"] == "Kavi Silks" and b["brand_color"] == "#16A34A" and b["tagline"] == "Pure silk"
     assert client.get("/brand/no-such-shop").status_code == 404
+
+
+def test_opening_a_chat_marks_it_read(client):
+    from test_app import text, whatsapp_message
+
+    bid, h = new_seller(client, name="Unread Shop", wa_phone_number_id="PN_UNREAD", wa_token="t")
+    whatsapp_message(client, "PN_UNREAD", "919000000888", text("hi"))
+    whatsapp_message(client, "PN_UNREAD", "919000000889", text("hello"))
+    assert client.get("/stats", headers=h).json()["unread"] == 2
+    chats = client.get("/conversations", headers=h).json()
+    assert all(c["unread"] for c in chats)
+    client.get(f"/conversations/{chats[0]['id']}/messages", headers=h)  # seller opens one chat
+    assert client.get("/stats", headers=h).json()["unread"] == 1
+    assert [c["unread"] for c in client.get("/conversations", headers=h).json() if c["id"] == chats[0]["id"]] == [False]
+    whatsapp_message(client, "PN_UNREAD", chats[0]["phone"], text("are you there?"))  # writes again
+    assert client.get("/stats", headers=h).json()["unread"] == 2

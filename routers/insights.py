@@ -42,6 +42,14 @@ def funnel(db: Session, business_id: int, days: int = 30) -> dict:
             "checkouts": counts.get("checkout_open", 0), "orders": counts.get("order", 0), "paid": paid}
 
 
+def unread_chats(db: Session, business_id: int) -> int:
+    from routers.conversations import is_unread
+
+    chats = db.query(models.Conversation).filter(
+        models.Conversation.business_id == business_id, models.Conversation.last_customer_message_at.isnot(None)).all()
+    return sum(1 for c in chats if is_unread(c))
+
+
 @router.get("/stats")
 def stats(db: Session = Depends(get_db), business: models.Business = Depends(current_business)):
     today = datetime.now(IST).date()
@@ -93,6 +101,7 @@ def stats(db: Session = Depends(get_db), business: models.Business = Depends(cur
         "unpaid": {"orders": len(unpaid), "amount": round(sum(o.total_amount for o in unpaid), 2)},
         "to_ship": sum(1 for o in orders if o.is_paid and o.status in ("Confirmed", "Packed")),
         "needs_you": needs_you,
+        "unread": unread_chats(db, business.id),
         "low_stock": low_stock,
         "total_orders": len(orders),
         "daily": daily,

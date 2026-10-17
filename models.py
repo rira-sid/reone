@@ -230,6 +230,8 @@ class Conversation(Base):
     seller_alert_stage = Column(Integer, default=0, nullable=False)  # 0 none, 1 alerted, 2 re-alerted, 3 customer told to wait
     seller_ack_at = Column(DateTime(timezone=True), nullable=True)  # last "seller will reply" sent to the customer
     last_seller_reply_at = Column(DateTime(timezone=True), nullable=True)
+    # When the seller (or staff) last opened this chat in the Inbox - newer customer messages are "unread".
+    seller_read_at = Column(DateTime(timezone=True), nullable=True)
     cart_json = Column(Text, default="[]")
     ai_paused = Column(Boolean, default=False, nullable=False)
     # WhatsApp only allows free-form messages within 24h of the customer's last message.

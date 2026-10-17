@@ -23,6 +23,7 @@ class ConversationOut(BaseModel):
     language: str | None
     ai_paused: bool
     needs_seller: bool
+    unread: bool = False  # customer wrote since the seller last opened this chat
     updated_at: datetime | None
     # False once 24h have passed since the customer's last message - WhatsApp then rejects
     # free-form replies until the customer writes again.
@@ -57,6 +58,18 @@ def _get_conversation(db: Session, business: models.Business, conversation_id: i
     return conversation
 
 
+def _utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def is_unread(conversation: models.Conversation) -> bool:
+    last = _utc(conversation.last_customer_message_at)
+    seen = _utc(conversation.seller_read_at)
+    return bool(last and (seen is None or last > seen))
+
+
 def _conversation_out(conversation: models.Conversation) -> dict:
     return {
         "id": conversation.id,
@@ -65,6 +78,7 @@ def _conversation_out(conversation: models.Conversation) -> dict:
         "language": conversation.language,
         "ai_paused": conversation.ai_paused,
         "needs_seller": conversation.needs_seller,
+        "unread": is_unread(conversation),
         "updated_at": conversation.updated_at,
         "reply_window_open": within_service_window(conversation),
     }
@@ -97,7 +111,11 @@ def list_customer_orders(conversation_id: int, db: Session = Depends(get_db), bu
 
 @router.get("/{conversation_id}/messages", response_model=list[MessageOut])
 def list_messages(conversation_id: int, db: Session = Depends(get_db), business: models.Business = Depends(current_business)):
-    return _get_conversation(db, business, conversation_id).messages
+    """Opening a chat (and the Inbox's refresh while it's open) marks it read."""
+    conversation = _get_conversation(db, business, conversation_id)
+    conversation.seller_read_at = datetime.now(timezone.utc)
+    db.commit()
+    return conversation.messages
 
 
 @router.patch("/{conversation_id}/takeover", response_model=ConversationOut)
