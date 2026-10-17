@@ -92,8 +92,21 @@ def brand_style(business: models.Business) -> str:
     r, g, b = _hex_to_rgb(color)
     light = (0.299 * r + 0.587 * g + 0.114 * b) > 150
     text = _shade(color, 0.55) if light else color  # prices/links stay readable on white cards
-    return (f":root{{--violet:{text};--hdr:linear-gradient(135deg,{color} 0%,{_shade(color, 0.62)} 100%);"
-            f"--soft:{_shade(color, 1.88)}}}")
+    grad = f"linear-gradient(135deg,{color} 0%,{_shade(color, 0.62)} 100%)"
+    # Buttons, the cart bar and highlights follow the brand too - not only the header.
+    return (f":root{{--violet:{text};--hdr:{grad};--soft:{_shade(color, 1.88)}}}"
+            f".big{{background:{grad}}}.bar button{{background:{grad};box-shadow:0 10px 24px {color}55}}"
+            f".chip[aria-pressed=true]{{border-color:{text}}}")
+
+
+def brand_palette(business: models.Business) -> list[str] | None:
+    """Category colours on the shop page: shades of the brand colour instead of the rainbow."""
+    color = business.brand_color
+    if not color:
+        return None
+    r, g, b = _hex_to_rgb(color)
+    base = _shade(color, 0.55) if (0.299 * r + 0.587 * g + 0.114 * b) > 150 else color
+    return [base, _shade(base, 0.75), _shade(base, 1.25), _shade(base, 0.6), _shade(base, 1.4)]
 
 
 def _nutrition_rows(text: str | None) -> list[list[str]]:
@@ -196,6 +209,7 @@ def catalog(shop_key: str, request: Request, background: BackgroundTasks, c: str
         "prefill": prefill,
         "languages": [[k, LANGUAGES[k][0]] for k in available_languages()],
         "whatsapp": _wa_link(business.phone),
+        "palette": brand_palette(business),
     }
     payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
     return HTMLResponse(SHOP_HTML
@@ -203,6 +217,7 @@ def catalog(shop_key: str, request: Request, background: BackgroundTasks, c: str
                         .replace("__DIR__", "rtl" if code in RTL else "ltr")
                         .replace("__TITLE__", escape(business.name))
                         .replace("__BRAND_STYLE__", brand_style(business))
+                        .replace("__THEME__", business.brand_color or "#7c3aed")
                         .replace("__DESC__", escape(business.tagline or "Order and pay in a minute."))
                         .replace("__DATA__", payload))
 
@@ -328,7 +343,7 @@ async def checkout(business_id: int, payload: CheckoutIn, db: Session = Depends(
 SHOP_HTML = r"""<!doctype html>
 <html lang="__LANG__" dir="__DIR__"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#7c3aed">
+<meta name="theme-color" content="__THEME__">
 <title>__TITLE__</title>
 <meta property="og:title" content="__TITLE__">
 <meta property="og:description" content="__DESC__">
@@ -472,7 +487,7 @@ footer{text-align:center;color:var(--muted);font-size:.78rem;padding:28px 16px}
 <script>
 const D = JSON.parse(document.getElementById("data").textContent);
 const T = D.texts, R = D.rules;
-const COLORS = ["#7c3aed","#db2777","#f97316","#0891b2","#16a34a","#ca8a04","#4f46e5","#e11d48","#0d9488","#9333ea"];
+const COLORS = D.palette || ["#7c3aed","#db2777","#f97316","#0891b2","#16a34a","#ca8a04","#4f46e5","#e11d48","#0d9488","#9333ea"];
 const KEY = "rira-cart-" + D.shop.id;
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -538,7 +553,7 @@ function header() {
 
 function renderChips() {
   if (!cats.length) { $("#chips").hidden = true; return; }
-  const all = [["", T.all, "#7c3aed"], ...cats.map((c) => [c, c, catColor(c)])];
+  const all = [["", T.all, COLORS[0]], ...cats.map((c) => [c, c, catColor(c)])];
   $("#chips").innerHTML = all.map(([v, l, c]) => `<button class="chip" style="--c:${c}" aria-pressed="${v === activeCat}" data-cat="${esc(v)}">${esc(l)}</button>`).join("");
   $("#chips").querySelectorAll("[data-cat]").forEach((b) => b.onclick = () => { activeCat = b.dataset.cat; renderChips(); renderGrid(); });
 }

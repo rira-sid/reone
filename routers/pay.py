@@ -97,9 +97,32 @@ def _qr_svg(data: str) -> str:
     return svg.decode() if isinstance(svg, bytes) else svg
 
 
-def _page(title: str, body: str) -> HTMLResponse:
+def _brand_head(b: models.Business | None) -> tuple[str, str, str]:
+    """(header html, extra css, theme colour): the shop's logo, name and colour on the pay page."""
+    if b is None:
+        return "", "", "#2563eb"
+    from routers.settings import shop_image_url
+    from routers.shop import _shade
+
+    color = b.brand_color or "#4338ca"
+    dark = _shade(color, 0.62)
+    logo = shop_image_url(b.logo_image_id)
+    mark = (f"<img src='{escape(logo)}' alt=''>" if logo else f"<span>{escape((b.name.strip() or 'S')[0].upper())}</span>")
+    head = f"<header class='brand'>{mark}<b>{escape(b.name)}</b></header>"
+    css = (f".brand{{display:flex;align-items:center;gap:10px;margin:-24px -20px 20px;padding:14px 20px;color:#fff;"
+           f"background:linear-gradient(135deg,{color},{dark})}}"
+           f".brand img,.brand span{{width:36px;height:36px;border-radius:9px;object-fit:cover;background:#fff;"
+           f"display:grid;place-items:center;color:{dark};font-weight:800}}.brand b{{font-size:17px}}"
+           f"button{{background:{dark}}}.more{{color:{dark}}}.app:active{{border-color:{color};background:#fff}}"
+           f".status{{background:{_shade(color, 1.88)};color:{dark}}}")
+    return head, css, color
+
+
+def _page(title: str, body: str, business: models.Business | None = None) -> HTMLResponse:
+    brand_html, brand_css, theme = _brand_head(business)
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{escape(title)}</title>
+<meta name="theme-color" content="{theme}">
 <style>
  body{{font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;color:#111827}}
  .card{{max-width:440px;margin:0 auto;background:#fff;min-height:100vh;padding:24px 20px;box-sizing:border-box}}
@@ -116,7 +139,8 @@ def _page(title: str, body: str) -> HTMLResponse:
  .note{{font-size:13px;color:#4b5563;margin-top:20px;line-height:1.5}} .paid{{font-size:22px;color:#059669}}
  button.app{{font:inherit;cursor:pointer}} .status{{background:#eff6ff;color:#1e40af;border-radius:10px;padding:12px;font-size:14px}}
  .more{{display:block;text-align:center;margin-top:14px;font-size:14px;color:#2563eb}}
-</style></head><body><div class="card">{body}</div></body></html>""")
+ {brand_css}
+</style></head><body><div class="card">{brand_html}{body}</div></body></html>""")
 
 
 @router.get("/{order_id}", response_class=HTMLResponse)
@@ -132,13 +156,12 @@ def pay_page(order_id: int, t: str = "", db: Session = Depends(get_db)):
     if not order:
         raise HTTPException(status_code=404, detail="Payment page not found")
     b = order.business
-    shop = escape(b.name)
-    head = f"<h1>{shop}</h1><div class='muted'>Order #{order.id}</div>"
+    head = f"<h1>Order #{order.id}</h1>"
 
     if order.is_paid:
-        return _page(f"Paid - {b.name}", f"{head}<p class='paid'>✅ Paid - thank you!</p>")
+        return _page(f"Paid - {b.name}", f"{head}<p class='paid'>✅ Paid - thank you!</p>", b)
     if order.status == "Cancelled":
-        return _page(b.name, f"{head}<p>This order was cancelled.</p>")
+        return _page(b.name, f"{head}<p>This order was cancelled.</p>", b)
     items = ", ".join(f"{i.quantity} × {escape(i.display_name)}" for i in order.items)
     if effective_payment_method(b) in ("razorpay_link", "whatsapp_pay") and method_ready(b, "razorpay_link"):
         try:
@@ -146,7 +169,7 @@ def pay_page(order_id: int, t: str = "", db: Session = Depends(get_db)):
         except Exception as e:  # Razorpay down or keys wrong - fall through to UPI/manual below
             print(f"RAZORPAY ORDER FAILED (order {order.id}):", repr(e))
     if not b.upi_id:
-        return _page(b.name, f"{head}<p>The seller will send you payment details on WhatsApp.</p>")
+        return _page(b.name, f"{head}<p>The seller will send you payment details on WhatsApp.</p>", b)
 
     query = upi_query(b, order)
     buttons = "".join(
@@ -161,7 +184,7 @@ def pay_page(order_id: int, t: str = "", db: Session = Depends(get_db)):
 <div class="upi"><span>{upi_id}</span><button onclick="navigator.clipboard.writeText('{upi_id}');this.textContent='Copied'">Copy</button></div>
 <p class="note">Money goes directly to {escape(b.upi_name or b.name)}. After you pay, the seller confirms it and
 you'll get a message on WhatsApp. If anything goes wrong, just reply in the chat.</p>"""
-    return _page(f"Pay {b.name}", body)
+    return _page(f"Pay {b.name}", body, b)
 
 
 # Razorpay's UPI Intent app codes for the same four logos (works on Android and iOS).
@@ -244,7 +267,7 @@ document.querySelectorAll("[data-app]").forEach((btn) => btn.addEventListener("c
   rzp.createPayment(cfg.payment, {{ app: btn.dataset.app }});
 }}));
 </script>"""
-    return _page(f"Pay {b.name}", body)
+    return _page(f"Pay {b.name}", body, b)
 
 
 class RazorpayResult(BaseModel):
