@@ -1137,7 +1137,7 @@ def test_voice_note_never_guessed(client, fake_ai, fake_whatsapp, monkeypatch):
     assert "வாய்ஸ் நோட்" in fake_whatsapp.sent[-1][3]  # asked to resend, not a random answer
 
 
-def test_audio_never_uses_fallback_model(monkeypatch):
+def _audio_attempts(monkeypatch, main, fallback):
     import asyncio
     from google.genai import errors
     tried = []
@@ -1150,9 +1150,20 @@ def test_audio_never_uses_fallback_model(monkeypatch):
     fake = type("C", (), {"aio": type("A", (), {"models": Models()})()})()
     monkeypatch.setattr(ai, "_gemini_client", lambda: fake)
     monkeypatch.setattr(ai, "GEMINI_AUDIO_RETRY_DELAYS", (0, 0))
+    monkeypatch.setattr(ai, "GEMINI_MODEL", main)
+    monkeypatch.setattr(ai, "GEMINI_FALLBACK_MODEL", fallback)
     raised = False
     try:
         asyncio.run(ai._run_gemini("p", None, (b"ogg", "audio/ogg")))
     except ai.VoiceNotHeard:
         raised = True
-    assert raised and len(tried) == 3 and all(m == ai.GEMINI_MODEL for m in tried)
+    return raised, tried
+
+
+def test_audio_never_uses_fallback_model(monkeypatch):
+    # Paid setup: full model first, lite fallback - voice never goes to the lite model.
+    raised, tried = _audio_attempts(monkeypatch, "gemini-flash-latest", "gemini-flash-lite-latest")
+    assert raised and tried == ["gemini-flash-latest"] * 3
+    # Free setup: lite first, then the full model gets the last try.
+    raised, tried = _audio_attempts(monkeypatch, "gemini-flash-lite-latest", "gemini-flash-latest")
+    assert raised and tried == ["gemini-flash-lite-latest"] * 3 + ["gemini-flash-latest"]
