@@ -17,7 +17,7 @@ from database import get_db
 from routers.insights import funnel
 from routers.invoices import PUBLIC_BASE_URL
 from routers.pay import effective_payment_method
-from slugs import ensure_slug, shop_path
+from slugs import check_wanted, ensure_slug, shop_path
 from tracking import audit, client_ip
 
 router = APIRouter(prefix="/admin", tags=["founder"], dependencies=[Depends(current_founder)])
@@ -129,6 +129,7 @@ class NewBusiness(BaseModel):
     email: str
     phone: str | None = None
     password: str | None = None  # blank = generate one
+    slug: str | None = None  # web address; blank = made from the name
 
 
 @router.post("/businesses")
@@ -141,11 +142,17 @@ def create_business(payload: NewBusiness, request: Request, db: Session = Depend
         raise HTTPException(status_code=400, detail="Business name and a valid email are required")
     if email_taken(db, email):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
+    slug = None
+    if (payload.slug or "").strip():
+        try:
+            slug = check_wanted(db, payload.slug)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     password = (payload.password or "").strip() or secrets.token_urlsafe(9)
     if len(password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     business = models.Business(name=name, owner_email=email, password_hash=hash_password(password),
-                               phone=(payload.phone or "").strip() or None)
+                               phone=(payload.phone or "").strip() or None, slug=slug)
     billing.start_trial(business, "founder")
     db.add(business)
     db.commit()
@@ -171,6 +178,26 @@ def set_status(business_id: int, payload: BusinessStatus, request: Request, db: 
     business.paused_reason = None if payload.is_active else "founder"
     db.commit()
     audit(db, founder, "resume" if payload.is_active else "pause", business.id, None, client_ip(request))
+    return _row(db, business, datetime.now(timezone.utc))
+
+
+class AddressChange(BaseModel):
+    slug: str
+
+
+@router.patch("/businesses/{business_id}/address")
+def change_address(business_id: int, payload: AddressChange, request: Request, db: Session = Depends(get_db),
+                   founder: models.FounderUser = Depends(current_founder)):
+    business = db.get(models.Business, business_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    try:
+        slug = check_wanted(db, payload.slug, business.id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    old, business.slug = business.slug, slug
+    db.commit()
+    audit(db, founder, "web address", business.id, f"{old} -> {slug}", client_ip(request))
     return _row(db, business, datetime.now(timezone.utc))
 
 

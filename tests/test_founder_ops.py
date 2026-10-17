@@ -235,3 +235,18 @@ def test_shops_get_a_web_address_from_their_name(client):
     assert client.patch("/business", json={"slug": "ab"}, headers=h).status_code == 400
     assert client.patch("/business", json={"slug": "12345"}, headers=h).status_code == 400
     assert client.get("/shop/meena-foods").status_code == 200
+
+
+def test_founder_chooses_the_web_address(client):
+    founder = founder_headers(client)
+    r = client.post("/admin/businesses", json={"name": "Siva Stores", "email": f"siva{next(_ids)}@x.in",
+                                               "slug": "Siva Masala"}, headers=founder)
+    assert r.status_code == 200 and r.json()["business"]["slug"] == "siva-masala"
+    bid = r.json()["business"]["id"]
+    dup = client.post("/admin/businesses", json={"name": "Other", "email": f"o{next(_ids)}@x.in", "slug": "siva-masala"},
+                      headers=founder)
+    assert dup.status_code == 400 and "taken" in dup.json()["detail"]
+    r = client.patch(f"/admin/businesses/{bid}/address", json={"slug": "sivamasala"}, headers=founder)
+    assert r.json()["slug"] == "sivamasala" and r.json()["shop_url"].endswith("/shop/sivamasala")
+    assert client.patch(f"/admin/businesses/{bid}/address", json={"slug": "x"}, headers=founder).status_code == 400
+    assert client.patch(f"/admin/businesses/{bid}/address", json={"slug": "abc"}).status_code == 401

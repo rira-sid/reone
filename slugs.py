@@ -43,6 +43,16 @@ def ensure_slug(db, business: models.Business) -> str:
     return slug
 
 
+def check_wanted(db, wanted: str, exclude_id: int | None = None) -> str:
+    """Normalise an address someone typed; raises ValueError with a message for people."""
+    slug = slugify(wanted)
+    if len(slug) < 3 or not valid(slug):
+        raise ValueError("Use 3-50 letters, numbers or dashes for the web address")
+    if taken(db, slug, exclude_id):
+        raise ValueError(f"The address '{slug}' is already taken - try another")
+    return slug
+
+
 def backfill(db):
     for business in db.query(models.Business).filter(models.Business.slug.is_(None)).all():
         ensure_slug(db, business)
