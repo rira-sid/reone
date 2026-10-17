@@ -268,6 +268,9 @@ async def signup(payload: SignupIn, request: Request, background: BackgroundTask
     start_trial(business, "invite" if code else "self")
     db.add(business)
     db.commit()
+    from slugs import ensure_slug
+
+    ensure_slug(db, business)
     background.add_task(record_login, request_info(request), "seller", email, True, business.id)
     await founder_alert(db, f"New sign-up: {business.name} ({email}{', ' + business.phone if business.phone else ''})"
                             + (" - waiting for your approval" if business.approval_status == "pending" else " (invite code)"))
@@ -277,6 +280,7 @@ async def signup(payload: SignupIn, request: Request, background: BackgroundTask
 class MeOut(BaseModel):
     business_id: int
     business_name: str
+    slug: str | None = None
     role: str
     name: str | None
 
@@ -286,6 +290,7 @@ def me(user: CurrentUser = Depends(current_user)):
     return {
         "business_id": user.business.id,
         "business_name": user.business.name,
+        "slug": user.business.slug,
         "role": "owner" if user.is_owner else "staff",
         "name": user.staff.name if user.staff else None,
     }

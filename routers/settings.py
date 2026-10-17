@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
+import slugs
+from slugs import shop_path
 import models
 from auth import current_business, email_taken, hash_password, owner_business, verify_password
 import re
@@ -38,6 +40,7 @@ class BusinessOut(BaseModel):
     free_delivery_above: float | None
     min_order_amount: float | None
     catalog_path: str
+    slug: str | None
     # Secrets are write-only: the dashboard only learns whether they're set.
     whatsapp_connected: bool
     razorpay_connected: bool
@@ -52,6 +55,7 @@ class BusinessOut(BaseModel):
 
 class BusinessUpdate(BaseModel):
     name: str | None = None
+    slug: str | None = None
     phone: str | None = None
     address: str | None = None
     gstin: str | None = None
@@ -117,7 +121,8 @@ def _out(business: models.Business) -> dict:
         "delivery_fee": business.delivery_fee or 0.0,
         "free_delivery_above": business.free_delivery_above,
         "min_order_amount": business.min_order_amount,
-        "catalog_path": f"/shop/{business.id}",
+        "catalog_path": shop_path(business),
+        "slug": business.slug,
         "whatsapp_connected": whatsapp_creds(business) is not None,
         "razorpay_connected": bool(rp.key_id and rp.key_secret),
         "razorpay_webhook_ready": bool(rp.webhook_secret),
@@ -146,6 +151,16 @@ def update_business(
             if field == "name" and not value:
                 raise HTTPException(status_code=400, detail="Business name can't be empty")
             setattr(business, field, value)
+
+    if "slug" in data:
+        slug = slugs.slugify(data["slug"] or "")
+        if not slugs.valid(slug):
+            raise HTTPException(status_code=400, detail="Use 3-50 letters, numbers or dashes for the shop address")
+        if len(slug) < 3:
+            raise HTTPException(status_code=400, detail="The shop address needs at least 3 characters")
+        if slugs.taken(db, slug, business.id):
+            raise HTTPException(status_code=409, detail="That shop address is taken - try another")
+        business.slug = slug
 
     for field in ("accepting_orders", "cod_enabled"):
         if data.get(field) is not None:

@@ -173,7 +173,7 @@ def test_language_menu_then_welcome_with_shop_button(client, fake_ai, fake_whats
     assert "Fresh every morning!" in welcome["body"]["text"]
     assert welcome["action"]["parameters"]["display_text"] == "இப்போதே வாங்க"
     url = welcome["action"]["parameters"]["url"]
-    assert f"/shop/{business_id}?c=919000000101." in url and "lang=ta" in url
+    assert "/shop/anu-bakes" in url and "?c=919000000101." in url and "lang=ta" in url
 
 
 def test_wants_to_buy_gets_shop_link_with_cart(client, fake_ai, fake_whatsapp):

@@ -34,8 +34,10 @@ with SessionLocal() as db:
         db.add(models.Business(id=DEFAULT_BUSINESS_ID, name="My Business"))
         db.commit()
     import billing
+    import slugs
 
     billing.backfill(db)
+    slugs.backfill(db)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

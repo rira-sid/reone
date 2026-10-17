@@ -10,6 +10,8 @@ class Business(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
+    # Shop web address: /shop/<slug> (slugs.py). Unique; made from the name, changeable in Settings.
+    slug = Column(String, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Login

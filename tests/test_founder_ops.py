@@ -211,3 +211,27 @@ def test_health_lists_problems(client):
     assert any(w["business_id"] == bid and "approval" in w["text"] for w in data["warnings"])
     assert any(e["source"] == "ai" and e["business_id"] == bid for e in data["events"])
     assert client.get("/admin/health").status_code == 401
+
+
+def test_shops_get_a_web_address_from_their_name(client):
+    founder = founder_headers(client)
+    created = client.post("/admin/businesses", json={"name": "Meena's Pickles & Snacks", "email": f"meena{next(_ids)}@x.in"},
+                          headers=founder).json()
+    bid = created["business"]["id"]
+    assert created["business"]["shop_url"].endswith("/shop/meenas-pickles-and-snacks")
+    assert client.get("/shop/meenas-pickles-and-snacks").status_code == 200
+    assert client.get("/shop/MEENAS-PICKLES-AND-SNACKS").status_code == 200
+    assert client.get(f"/shop/{bid}").status_code == 200  # old number links still work
+    # Same name again gets its own address.
+    again = client.post("/admin/businesses", json={"name": "Meena's Pickles & Snacks", "email": f"meena{next(_ids)}@x.in"},
+                        headers=founder).json()
+    assert again["business"]["shop_url"].endswith("/shop/meenas-pickles-and-snacks-2")
+    # A name in another script falls back to shop-<id>.
+    _, h = new_seller(client, name="மீனா ஊறுகாய்")
+    assert client.get("/business", headers=h).json()["catalog_path"].startswith("/shop/shop-")
+    # The seller can choose their own address.
+    assert client.patch("/business", json={"slug": "Meena Foods"}, headers=h).json()["catalog_path"] == "/shop/meena-foods"
+    assert client.patch("/business", json={"slug": "meenas-pickles-and-snacks"}, headers=h).status_code == 409
+    assert client.patch("/business", json={"slug": "ab"}, headers=h).status_code == 400
+    assert client.patch("/business", json={"slug": "12345"}, headers=h).status_code == 400
+    assert client.get("/shop/meena-foods").status_code == 200

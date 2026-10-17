@@ -47,10 +47,13 @@ def phone_from_token(business_id: int, token: str | None) -> str | None:
     return phone if sig == sign_value(f"cust:{business_id}:{phone}") else None
 
 
-def shop_link(business_id: int, phone: str | None, lang: str | None, cart: list[ai.CartItem] | None = None) -> str:
+def shop_link(business: models.Business, phone: str | None, lang: str | None,
+              cart: list[ai.CartItem] | None = None) -> str:
+    from slugs import shop_path
+
     params = {}
     if phone:
-        params["c"] = customer_token(business_id, phone)
+        params["c"] = customer_token(business.id, phone)
     if lang:
         params["lang"] = lang
     if cart:
@@ -58,7 +61,7 @@ def shop_link(business_id: int, phone: str | None, lang: str | None, cart: list[
             f"{i.product_id}{'-' + str(i.variant_id) if i.variant_id else ''}:{max(1, i.quantity)}" for i in cart
         )
     query = f"?{urlencode(params)}" if params else ""
-    return f"{PUBLIC_BASE_URL}/shop/{business_id}{query}"
+    return f"{PUBLIC_BASE_URL}{shop_path(business)}{query}"
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -112,7 +115,7 @@ async def _send_text(db, creds, conversation: models.Conversation, text: str, se
 async def _send_shop_button(db, business: models.Business, creds, conversation: models.Conversation, text: str,
                             cart: list[ai.CartItem] | None = None):
     lang = conversation.preferred_language
-    url = shop_link(business.id, conversation.phone, lang, cart)
+    url = shop_link(business, conversation.phone, lang, cart)
     db.add(models.Message(conversation_id=conversation.id, sender="ai", text=f"{text}\n🛍️ {url}"))
     db.commit()
     try:

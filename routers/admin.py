@@ -17,6 +17,7 @@ from database import get_db
 from routers.insights import funnel
 from routers.invoices import PUBLIC_BASE_URL
 from routers.pay import effective_payment_method
+from slugs import ensure_slug, shop_path
 from tracking import audit, client_ip
 
 router = APIRouter(prefix="/admin", tags=["founder"], dependencies=[Depends(current_founder)])
@@ -97,7 +98,8 @@ def _row(db: Session, business: models.Business, now: datetime) -> dict:
         "funnel_30d": funnel(db, business.id),
         "last_activity_at": last_activity,
         "active_7d": bool(last_activity and now - last_activity < timedelta(days=7)),
-        "shop_url": f"{PUBLIC_BASE_URL}/shop/{business.id}",
+        "shop_url": f"{PUBLIC_BASE_URL}{shop_path(business)}",
+        "slug": business.slug,
     }
 
 
@@ -148,6 +150,7 @@ def create_business(payload: NewBusiness, request: Request, db: Session = Depend
     db.add(business)
     db.commit()
     db.refresh(business)
+    ensure_slug(db, business)
     audit(db, founder, "add business", business.id, f"{name} <{email}>", client_ip(request))
     return {"business": _row(db, business, datetime.now(timezone.utc)), "login_email": email, "password": password}
 

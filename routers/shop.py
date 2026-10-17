@@ -121,13 +121,15 @@ def _catalog_json(business: models.Business, products: list[models.Product]) -> 
     return out
 
 
-@router.get("/{business_id}", response_class=HTMLResponse)
-def catalog(business_id: int, request: Request, background: BackgroundTasks, c: str | None = None,
+@router.get("/{shop_key}", response_class=HTMLResponse)
+def catalog(shop_key: str, request: Request, background: BackgroundTasks, c: str | None = None,
             lang: str | None = None, add: str | None = None, src: str | None = None, db: Session = Depends(get_db)):
     from chatbot import phone_from_token
     from routers.settings import shop_image_url
 
-    business = db.get(models.Business, business_id)
+    from slugs import find
+
+    business = find(db, shop_key)
     if not business:
         raise HTTPException(status_code=404, detail="Shop not found")
     if not business.is_live:
