@@ -27,6 +27,7 @@ def _serialize_order(order: models.Order) -> dict:
         "paid_at": order.paid_at,
         "tracking_info": order.tracking_info,
         "delivery_fee": order.delivery_fee or 0.0,
+        "discount_amount": order.discount_amount or 0.0,
         "payment_method": order.payment_method or "online",
         "customer_note": order.customer_note,
         "invoice_path": invoice_path(order.id),
@@ -163,7 +164,14 @@ def place_order(
         raise HTTPException(status_code=400, detail=f"Minimum order is ₹{business.min_order_amount:g}")
 
     order.delivery_fee = delivery_fee_for(business, subtotal)
-    order.total_amount = subtotal + order.delivery_fee
+    # A discount the shop gave this customer earlier (e.g. to make up for an issue) is used automatically.
+    credit = db.query(models.CustomerCredit).filter(
+        models.CustomerCredit.business_id == business.id, models.CustomerCredit.phone == customer.phone,
+        models.CustomerCredit.used_order_id.is_(None)).order_by(models.CustomerCredit.id).first()
+    if credit and subtotal > 0:
+        order.discount_amount = round(min(credit.amount, subtotal), 2)
+        credit.used_order_id = order.id
+    order.total_amount = subtotal + order.delivery_fee - (order.discount_amount or 0)
     if payment_method == "cod":
         order.status = "Confirmed"  # nothing to wait for - reserve the stock now
         db.flush()
@@ -185,7 +193,6 @@ def create_order(payload: schemas.OrderCreate, db: Session = Depends(get_db), bu
 
 # What the customer is told when the seller moves their order along.
 STATUS_UPDATES = {
-    "Packed": "It has been packed and will be shipped soon.",
     "Shipped": "It has been shipped.",
     "Delivered": "It has been delivered. Thank you for shopping with us!",
     "Cancelled": "It has been cancelled. Please reply here if you have any questions.",

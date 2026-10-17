@@ -112,6 +112,7 @@ class OrderOut(BaseModel):
     paid_at: datetime | None = None
     tracking_info: str | None = None
     delivery_fee: float = 0.0
+    discount_amount: float = 0.0
     payment_method: str = "online"
     customer_note: str | None = None
     invoice_path: str

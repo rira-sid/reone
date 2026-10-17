@@ -104,6 +104,10 @@ async def reminder_loop():
                 print(f"Cancelled {count} unpaid order(s)")
             with SessionLocal() as db:
                 await escalate_waiting(db)
+            import incidents
+
+            with SessionLocal() as db:
+                await incidents.escalate(db)
             from billing import billing_tick, check_whatsapp_health
 
             with SessionLocal() as db:

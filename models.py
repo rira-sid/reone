@@ -180,6 +180,7 @@ class Order(Base):
     paid_at = Column(DateTime(timezone=True), nullable=True)
     tracking_info = Column(Text, nullable=True)
     delivery_fee = Column(Float, default=0.0, nullable=False)
+    discount_amount = Column(Float, default=0.0, nullable=False)  # customer credit used (e.g. after an issue)
     payment_method = Column(String, default="online", nullable=False)  # "online" | "cod"
     customer_note = Column(Text, nullable=True)
     # True while this order's items are taken out of product stock (paid, or a confirmed COD order).
@@ -232,6 +233,8 @@ class Conversation(Base):
     last_seller_reply_at = Column(DateTime(timezone=True), nullable=True)
     # When the seller (or staff) last opened this chat in the Inbox - newer customer messages are "unread".
     seller_read_at = Column(DateTime(timezone=True), nullable=True)
+    # Customer messages up to this id have been answered (or passed on) - newer ones are [NEW].
+    last_processed_message_id = Column(Integer, nullable=True)
     cart_json = Column(Text, default="[]")
     ai_paused = Column(Boolean, default=False, nullable=False)
     # WhatsApp only allows free-form messages within 24h of the customer's last message.
@@ -250,6 +253,9 @@ class Message(Base):
     # Meta's id for incoming messages - used to ignore Meta's retried deliveries, even after a restart.
     wa_message_id = Column(String, nullable=True, index=True)
     text = Column(Text, nullable=False)
+    # A photo / voice note's WhatsApp media id, so a batch of messages can be read together later.
+    media_id = Column(String, nullable=True)
+    media_type = Column(String, nullable=True)  # "image" | "audio"
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     conversation = relationship("Conversation", back_populates="messages")
@@ -443,3 +449,48 @@ class ProductTranslation(Base):
     source_hash = Column(String, nullable=True)  # English text it was made from
     edited = Column(Boolean, default=False, nullable=False)  # seller corrected it by hand
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+INCIDENT_STATUSES = ["open", "in_progress", "resolved"]
+
+
+class Incident(Base):
+    """A customer's problem (damaged / wrong item, payment, refund...). Shown on the Issues page;
+    the customer gets one personal note with the number (#INC-<id>), then only the owner replies."""
+    __tablename__ = "incidents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False, index=True)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=True)
+    category = Column(String, nullable=False, default="other")
+    summary = Column(Text, nullable=True)
+    status = Column(String, nullable=False, default="open")
+    resolution = Column(String, nullable=True)  # refund | partial_refund | replacement | discount | other
+    resolution_note = Column(Text, nullable=True)
+    refund_amount = Column(Float, nullable=True)
+    replacement_order_id = Column(Integer, nullable=True)
+    discount_amount = Column(Float, nullable=True)
+    alert_stage = Column(Integer, default=1, nullable=False)  # 1 alerted, 2 re-alerted at 10 min
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    conversation = relationship("Conversation")
+
+    @property
+    def number(self) -> str:
+        return f"INC-{self.id}"
+
+
+class CustomerCredit(Base):
+    """A discount given to a customer (e.g. to make up for an issue), used automatically at their next checkout."""
+    __tablename__ = "customer_credits"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False, index=True)
+    phone = Column(String, nullable=False, index=True)
+    amount = Column(Float, nullable=False)
+    incident_id = Column(Integer, nullable=True)
+    used_order_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

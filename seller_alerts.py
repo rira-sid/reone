@@ -62,7 +62,16 @@ async def _send_alert(db, business: models.Business, conversation: models.Conver
     return True
 
 
-async def alert_seller(db, business: models.Business, conversation: models.Conversation, question: str) -> bool:
+async def alert_seller(db, business: models.Business, conversation: models.Conversation, question: str,
+                       added: bool = False) -> bool:
+    """`added`: more lines for a question that's already waiting - sent as an addition to the same thread."""
+    if added and conversation.needs_seller_since:
+        since = conversation.needs_seller_since
+        since = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since
+        minutes = max(1, int((datetime.now(timezone.utc) - since).total_seconds() // 60))
+        text = (f"➕ {_who(conversation)} added ({minutes} min later):\n\"{question}\"\n\n"
+                "↩️ Swipe-reply to this message to answer.")
+        return await _send_alert(db, business, conversation, text, question)
     text = (f"❓ {_who(conversation)} (+{conversation.phone}) asks:\n\"{question}\"\n\n"
             "↩️ Swipe-reply to this message to answer.\nReply *bot* to let the assistant handle it.")
     return await _send_alert(db, business, conversation, text, question)
@@ -137,6 +146,10 @@ async def handle_seller_reply(db, business: models.Business, phone: str, text: s
         await send_message(creds, phone, f"⚠️ Couldn't send to {name}: {e}")
         return
     db.add(models.Message(conversation_id=conversation.id, sender="seller", text=text, wa_message_id=wa_message_id))
+    # Replying to an issue starts work on it.
+    for incident in db.query(models.Incident).filter(models.Incident.conversation_id == conversation.id,
+                                                     models.Incident.status == "open").all():
+        incident.status = "in_progress"
     conversation.needs_seller = False
     conversation.seller_alert_stage = 0
     conversation.last_seller_reply_at = datetime.now(timezone.utc)

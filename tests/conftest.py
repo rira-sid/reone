@@ -16,6 +16,8 @@ os.environ.update(
     RAZORPAY_WEBHOOK_SECRET="legacy-webhook-secret",
     ANTHROPIC_API_KEY="test-key-not-used",
     GEO_LOOKUP="0",
+    BATCH_WAIT_SECONDS="0",
+    BATCH_WAIT_LONG_SECONDS="0",
 )
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -58,13 +60,18 @@ class FakeAI:
 
     def turn(self, **overrides):
         base = dict(intent="question", reply="", cart=[])
+        if overrides.get("intent") == "shop":
+            base["share_link"] = True  # a customer asking to order/browse gets the shop link
         return ai.AssistantTurn(**{**base, **overrides})
 
     async def run_turn(self, shop_name, conversation, products, image=None, recent_orders=None, policies="",
-                       audio=None, language="English"):
+                       audio=None, language="English", profile="", open_items="", welcome_note="", new_after=None):
+        import ai as _ai
+
         self.calls.append({"shop": shop_name, "products": [p.name for p in products], "image": image,
                            "orders": [o.id for o in recent_orders or []], "policies": policies, "audio": audio,
-                           "language": language})
+                           "language": language, "profile": profile, "open_items": open_items,
+                           "welcome_note": welcome_note, "transcript": _ai._transcript(conversation, new_after)})
         return self.queue.pop(0) if self.queue else self.turn()
 
 

@@ -24,7 +24,7 @@ GEMINI_RETRY_DELAYS = (2, 5)
 # Voice notes wait longer between retries; the fallback is only tried if it's the full model (the lite
 # one mishears speech). If nothing can hear it, the customer is asked to resend.
 GEMINI_AUDIO_RETRY_DELAYS = (3, 6, 10, 15)
-HISTORY_LIMIT = 20
+HISTORY_LIMIT = 30
 
 _clients: dict = {}  # created on first use, so a missing key for the unused provider doesn't matter
 
@@ -42,24 +42,41 @@ def _gemini_client():
         _clients["gemini"] = genai.Client()  # reads GEMINI_API_KEY
     return _clients["gemini"]
 
-SYSTEM_PROMPT = """You are the WhatsApp assistant of a small shop. Customers order by tapping a shop link (they browse the catalog, add to cart and pay on that page), so you never take orders in the chat. Your job is to understand each customer message and sort it, so it gets handled automatically or goes to the seller.
+SYSTEM_PROMPT = """You are the person who answers a small shop's WhatsApp. Talk like a warm, helpful shop assistant - natural, short (1-2 sentences, at most one emoji), never robotic, never mention that you are a bot, AI or assistant, and never say you are "passing it to the owner/seller". Customers order by tapping the shop link, which our system adds for you - NEVER write any link or URL yourself.
+
+Read everything you are given: <customer_profile>, <open_items>, <customer_orders>, <catalog>, <shop_policies>, <shop_welcome_note> and the <conversation> (each line has how long ago it was sent; lines marked [NEW] are the messages you must answer now - often one thought split over several messages; answer them together, once). Messages from "Shop owner (human)" are promises from the owner: never contradict them.
 
 Set intent to one of:
-- "shop": they want to buy, order, browse, see the menu / products / prices, or repeat an earlier order. Put the products they mentioned (with quantities, default 1) in cart, mapping what they said to catalog product ids by meaning - even with spelling mistakes or local-language names. If a product has sizes, pick the variant_id they asked for, else leave variant_id null. For "same as last time", fill cart from their latest order in <customer_orders>. Only use ids that exist in the catalog. Also use "shop" when they ask whether a product is available, its price, its sizes, or what it is - anything the catalog itself answers. reply MUST directly answer what they said, using only the catalog: e.g. "Yes, Mutton Masala is available - ₹120 a packet. I've added 2 packets to your cart, tap the button below to order." If something is out of stock or not in the catalog, say so plainly and suggest the closest product that is available. If they just want to browse, one friendly line inviting them to tap the button. Never say "here is our shop" without answering their question first.
-- "order_status": they ask about one of THEIR existing orders - where it is, delivery status, tracking, payment status, payment link, invoice. Answer in reply using ONLY <customer_orders>: order number, status, paid or not, tracking if any, and the payment link again if it's unpaid. If they report a problem with an order (late, damaged, wrong, missing, refund) use "question" instead.
-- "greeting": just hello / thanks / ok / bye with nothing else to handle. reply with one short friendly line that fits what they said (thanks -> "you're welcome", bye -> a warm goodbye, hello -> greet them and say you can help them order).
-- "change_language": they ask to change the language.
-- "unclear": ONLY for a voice note you genuinely can't make out (noise, silence, too faint, cut off). \
-Never guess what an unclear voice note says - use "unclear" and leave reply empty.
-- "question": everything else - questions about products, delivery areas or times, discounts, custom or bulk requests, complaints, refunds, problems, talking to a person, or anything you're not sure about. The seller answers these personally; leave reply empty.
+- "greeting": hello / hi / thanks / ok / bye with nothing else to handle. For hello/hi, greet like someone who knows the customer, using <customer_profile> and <open_items>, choosing the FIRST that applies:
+  1) a question is waiting for the owner -> reassure them it's being looked at ("Don't worry, ...") and that they'll hear back here very soon;
+  2) an order is unpaid -> mention it's ready and waiting for payment, "no rush", and ask if they'd like the payment link again (do NOT include the link);
+  3) an order is paid but not delivered -> reassure them it's on its way ("Don't worry, your order #.. is on its way");
+  4) delivered in the last 7 days -> welcome back and hope they enjoyed it (name the product);
+  5) has ordered before -> "so nice to hear from you again";
+  6) first time -> welcome them to the shop (weave in <shop_welcome_note> if there is one) and ask how you can help.
+  Use their name if known. Do not list products or prices in a greeting. share_link false.
+- "shop": they ask about products - availability, price, sizes, colours, what it is, photos - or want to order / browse / repeat an order. Answer exactly what they asked using only the catalog. Put products they want to buy in cart (quantity default 1), mapping what they said by meaning (spelling mistakes, local names). For sizes/options pick the matching variant_id. For "same as last time" use their latest order. Set share_link true ONLY when they want to order, buy, browse or see the products/photos; for a pure price/stock question answer and offer to share the link (share_link false). Size or option rules:
+  - asked size exists -> use it;
+  - asked size does not exist but others do -> say so kindly and suggest the available sizes or a combination (e.g. "2 x 100g"), cart empty until they choose;
+  - the product has no sizes and they ask by weight/size -> tell them the single pack price and that you'll check the exact weight for them: use intent "question" instead (the owner will confirm);
+  - out of stock -> say sorry it's sold out right now and offer to let the owner know they're interested; if they then say yes, use intent "notify_owner";
+  - product not sold -> say sorry you don't have it right now and suggest the closest products you do have.
+- "order_status": about one of THEIR orders - where it is, status, tracking, payment, invoice. Answer only from <customer_orders>. If they want to pay an unpaid order (or say yes to getting the link again) set payment_order_id to that order's number. If nothing matches, say so kindly.
+- "issue": a real problem - damaged, torn, leaking, wrong or missing item, late or not delivered, money debited but order unpaid, refund or return request, complaint. Set issue_category to one of damaged, wrong_item, missing, late_delivery, payment, refund, other, and issue_summary to one short line in English. reply = ONE short, sincere, personal note in the customer's language, e.g. "So sorry about this, Ravi 🙏 I've noted it as {INC} - you'll hear back on this very soon." - it must contain the exact text {INC} (the system puts the incident number there), and must not mention bots, AI or "the owner/seller".
+- "question": anything the shop's information doesn't answer - discounts or bargaining, bulk/wholesale, custom requests, delivery somewhere not covered, a fact that isn't given (weight of a pack, shelf life if not given...), or anything you're unsure about. reply = a short, natural holding line in the customer's language, e.g. "Good question, Ravi! Let me check that for you and get back in a few minutes 😊" (you may add a fact you DO know, like the pack price). Never guess.
+- "notify_owner": the customer said yes to being told when an out-of-stock product is back. reply = a short warm confirmation. Put the product in owner_note.
+- "unclear": ONLY for a voice note you genuinely can't make out. Leave reply empty.
 
-Rules:
-- Language: reply in the language of the customer's LATEST message, in that language's own script (Tamil in Tamil script, Hindi in Devanagari...), even if it differs from <language>. Only if the latest message has no clear language (an emoji, "ok", a number) use <language>. Set language_code to the language of the customer's latest message: one of en, hi, ta, te, ml, kn, bn, mr, gu, or, pa, ur, ar, ms, id, es, fr, pt, zh - or null if it has no clear language. Tanglish / Hinglish (Tamil or Hindi typed in English letters) count as ta / hi.
-- Behave the same in every language: the same kind of message must get the same intent whether it is written in English, Tamil, Hindi or any other language, typed or spoken.
-- Customers may send a voice note. If audio is attached, listen to the WHOLE recording carefully, treat what they said as their message and set heard_text to exactly what they said, word for word, in their language and script. Answer what they actually said - never a generic reply. Otherwise leave heard_text null.
-- Customers may send a photo (a product picture or a handwritten list). Treat what it shows as part of their message.
-- Never confirm or imply that a payment was received unless <customer_orders> says the order is paid. A customer saying "paid", or sending a screenshot or transaction ID, does not make it paid.
-- Never make up prices, discounts, delivery dates or policies. Keep replies short, like a friendly shop assistant on WhatsApp. No markdown headings."""
+Language - mirror the customer:
+- "Hi", "Hello", "Hey", "Thanks" typed in English letters with nothing else -> reply in English, even if earlier messages were in another language.
+- Otherwise reply in the language AND style of the [NEW] messages: Tamil script -> Tamil script; Tanglish (Tamil typed in English letters) -> Tanglish; Hindi -> Hindi script; Hinglish -> Hinglish; English -> English; any other language -> that language. If they mix languages, mix naturally the same way (keep product names as in the catalog). Neutral messages (ok, an emoji, a number, a photo) -> keep the language of the conversation so far.
+- language_code = the language of the [NEW] messages: en, hi, ta, te, ml, kn, bn, mr, gu, or, pa, ur, ar, ms, id, es, fr, pt, zh (Tanglish = ta, Hinglish = hi), or null for neutral messages.
+
+Other rules:
+- Voice note attached: listen to all of it, set heard_text to exactly what they said in their language/script, and answer what they actually said.
+- Photo attached: treat what it shows as part of their message (a product, a list, a damaged item -> "issue").
+- Never confirm a payment unless <customer_orders> says paid; "I paid" or a screenshot does not make it paid.
+- Never invent prices, discounts, delivery dates, policies or stock. Same intent for the same kind of message in every language, typed or spoken. No markdown headings."""
 
 
 class CartItem(BaseModel):
@@ -69,11 +86,16 @@ class CartItem(BaseModel):
 
 
 class AssistantTurn(BaseModel):
-    intent: Literal["shop", "order_status", "greeting", "change_language", "question", "unclear"]
-    reply: str
-    cart: list[CartItem]
+    intent: Literal["shop", "order_status", "greeting", "issue", "question", "notify_owner", "unclear", "change_language"]
+    reply: str = ""
+    cart: list[CartItem] = []
     heard_text: str | None = None
     language_code: str | None = None
+    share_link: bool = False  # send the shop button with this reply
+    payment_order_id: int | None = None  # send this unpaid order's payment link
+    issue_category: str | None = None
+    issue_summary: str | None = None
+    owner_note: str | None = None
 
 
 class VoiceNotHeard(Exception):
@@ -100,10 +122,33 @@ def _catalog_text(products: list[models.Product]) -> str:
     return "\n".join(lines)
 
 
-def _transcript(conversation: models.Conversation) -> str:
-    labels = {"customer": "Customer", "ai": "You", "seller": "Seller (human)", "system": "Automatic update"}
-    recent = conversation.messages[-HISTORY_LIMIT:]
-    return "\n".join(f"{labels.get(m.sender, m.sender)}: {m.text}" for m in recent)
+def _ago(when, now) -> str:
+    from datetime import timezone
+
+    if when is None:
+        return "?"
+    when = when.replace(tzinfo=timezone.utc) if when.tzinfo is None else when
+    minutes = int((now - when).total_seconds() // 60)
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{minutes} min ago"
+    if minutes < 48 * 60:
+        return f"{minutes // 60} h ago"
+    return f"{minutes // 1440} days ago"
+
+
+def _transcript(conversation: models.Conversation, new_after: int | None = None) -> str:
+    """Last messages with how long ago each was sent; customer messages after `new_after` are [NEW]."""
+    from datetime import datetime, timezone
+
+    labels = {"customer": "Customer", "ai": "You", "seller": "Shop owner (human)", "system": "Automatic update"}
+    now = datetime.now(timezone.utc)
+    lines = []
+    for m in conversation.messages[-HISTORY_LIMIT:]:
+        new = m.sender == "customer" and new_after is not None and m.id > new_after
+        lines.append(f"{'[NEW] ' if new else ''}[{_ago(m.created_at, now)}] {labels.get(m.sender, m.sender)}: {m.text}")
+    return "\n".join(lines)
 
 
 def _orders_text(orders: list[models.Order]) -> str:
@@ -135,6 +180,10 @@ async def run_turn(
     policies: str = "",
     audio: tuple[bytes, str] | None = None,
     language: str = "English",
+    profile: str = "",
+    open_items: str = "",
+    welcome_note: str = "",
+    new_after: int | None = None,
 ) -> AssistantTurn:
     """`image` / `audio` are an optional (bytes, mime_type) photo or voice note attached to the
     customer's latest message. Only Gemini can listen to audio; Claude is told to ask for text."""
@@ -143,9 +192,12 @@ async def run_turn(
         f"<language>{language}</language>\n\n"
         f"<shop_policies>\n{policies or '(none)'}\n</shop_policies>\n\n"
         f"<catalog>\n{_catalog_text(products)}\n</catalog>\n\n"
+        f"<shop_welcome_note>{welcome_note or '(none)'}</shop_welcome_note>\n\n"
+        f"<customer_profile>\n{profile or '(new customer)'}\n</customer_profile>\n\n"
+        f"<open_items>\n{open_items or '(nothing pending)'}\n</open_items>\n\n"
         f"<customer_orders>\n{_orders_text(recent_orders or [])}\n</customer_orders>\n\n"
-        f"<conversation>\n{_transcript(conversation)}\n</conversation>\n\n"
-        "Respond to the customer's latest message."
+        f"<conversation>\n{_transcript(conversation, new_after)}\n</conversation>\n\n"
+        "Respond to the [NEW] customer messages (if none are marked, the latest one)."
     )
     if image and image[1] not in SUPPORTED_IMAGE_TYPES:
         image = None
