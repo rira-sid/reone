@@ -14,13 +14,15 @@ import models
 
 AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini").lower()
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5-5")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
-# Free-tier Gemini often answers 503 "high demand" or 429 "rate limit" for a few seconds. Retry,
-# then try the lighter model, before giving up and handing the chat to the seller.
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-flash-lite-latest")
+# Free tier for now (founder's choice, 2026-10-17): the lighter model is the main one, because the
+# full model allows only 20 free requests a day. With Gemini billing on, set GEMINI_MODEL=
+# gemini-flash-latest and GEMINI_FALLBACK_MODEL=gemini-flash-lite-latest on Render.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
+# Tried when the main model is busy (503) or out of quota (429), before handing the chat to the seller.
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-flash-latest")
 GEMINI_RETRY_DELAYS = (2, 5)
-# Voice notes never go to the lighter fallback model - it mishears speech and answers something
-# random. Wait longer for the main model instead; if it still can't, the customer is asked to resend.
+# Voice notes wait longer between retries; the fallback is only tried if it's the full model (the lite
+# one mishears speech). If nothing can hear it, the customer is asked to resend.
 GEMINI_AUDIO_RETRY_DELAYS = (3, 6, 10, 15)
 HISTORY_LIMIT = 20
 
@@ -199,6 +201,8 @@ async def _run_gemini(prompt: str, image: tuple[bytes, str] | None, audio: tuple
     if audio:
         delays = GEMINI_AUDIO_RETRY_DELAYS
         attempts = [GEMINI_MODEL] * (len(delays) + 1)
+        if "lite" not in GEMINI_FALLBACK_MODEL:
+            attempts.append(GEMINI_FALLBACK_MODEL)
     else:
         delays = GEMINI_RETRY_DELAYS
         attempts = [GEMINI_MODEL] * (len(delays) + 1) + [GEMINI_FALLBACK_MODEL]
