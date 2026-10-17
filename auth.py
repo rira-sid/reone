@@ -283,6 +283,7 @@ class MeOut(BaseModel):
     slug: str | None = None
     logo_url: str | None = None
     brand_color: str | None = None
+    email: str | None = None
     role: str
     name: str | None
 
@@ -301,6 +302,7 @@ def me(user: CurrentUser = Depends(current_user)):
         "slug": user.business.slug,
         "logo_url": _logo_url(user.business),
         "brand_color": user.business.brand_color,
+        "email": user.staff.email if user.staff else user.business.owner_email,
         "role": "owner" if user.is_owner else "staff",
         "name": user.staff.name if user.staff else None,
     }
