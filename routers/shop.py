@@ -84,31 +84,6 @@ def _shade(color: str, factor: float) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def brand_style(business: models.Business) -> str:
-    """CSS overrides that recolour the shop in the business's brand colour (readable on white)."""
-    color = business.brand_color
-    if not color:
-        return ""
-    r, g, b = _hex_to_rgb(color)
-    light = (0.299 * r + 0.587 * g + 0.114 * b) > 150
-    text = _shade(color, 0.55) if light else color  # prices/links stay readable on white cards
-    grad = f"linear-gradient(135deg,{color} 0%,{_shade(color, 0.62)} 100%)"
-    # Buttons, the cart bar and highlights follow the brand too - not only the header.
-    return (f":root{{--violet:{text};--hdr:{grad};--soft:{_shade(color, 1.88)}}}"
-            f".big{{background:{grad}}}.bar button{{background:{grad};box-shadow:0 10px 24px {color}55}}"
-            f".chip[aria-pressed=true]{{border-color:{text}}}")
-
-
-def brand_palette(business: models.Business) -> list[str] | None:
-    """Category colours on the shop page: shades of the brand colour instead of the rainbow."""
-    color = business.brand_color
-    if not color:
-        return None
-    r, g, b = _hex_to_rgb(color)
-    base = _shade(color, 0.55) if (0.299 * r + 0.587 * g + 0.114 * b) > 150 else color
-    return [base, _shade(base, 0.75), _shade(base, 1.25), _shade(base, 0.6), _shade(base, 1.4)]
-
-
 def _nutrition_rows(text: str | None) -> list[list[str]]:
     rows = []
     for line in (text or "").splitlines():
@@ -209,15 +184,13 @@ def catalog(shop_key: str, request: Request, background: BackgroundTasks, c: str
         "prefill": prefill,
         "languages": [[k, LANGUAGES[k][0]] for k in available_languages()],
         "whatsapp": _wa_link(business.phone),
-        "palette": brand_palette(business),
     }
     payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
     return HTMLResponse(SHOP_HTML
                         .replace("__LANG__", code)
                         .replace("__DIR__", "rtl" if code in RTL else "ltr")
                         .replace("__TITLE__", escape(business.name))
-                        .replace("__BRAND_STYLE__", brand_style(business))
-                        .replace("__THEME__", business.brand_color or "#7c3aed")
+                        .replace("__THEME__", "#fcf6f0")
                         .replace("__DESC__", escape(business.tagline or "Order and pay in a minute."))
                         .replace("__DATA__", payload))
 
@@ -348,7 +321,7 @@ SHOP_HTML = r"""<!doctype html>
 <meta property="og:title" content="__TITLE__">
 <meta property="og:description" content="__DESC__">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&family=Noto+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Noto+Sans:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 :root{--hdr:linear-gradient(135deg,#7c3aed 0%,#db2777 55%,#f97316 100%);--soft:#f5f0ff;--violet:#7c3aed;--pink:#ec4899;--orange:#f97316;--yellow:#facc15;--green:#16a34a;--green-d:#15803d;
  --ink:#1e1b2e;--muted:#5b5670;--line:#ece8f5;--bg:#faf7ff;--card:#fff;--radius:20px}
@@ -467,7 +440,79 @@ footer{text-align:center;color:var(--muted);font-size:.78rem;padding:28px 16px}
 .size[aria-pressed=true],.pay label:has(input:checked){background:var(--soft)}
 .big{background:var(--hdr)}
 </style>
-<style>__BRAND_STYLE__</style></head>
+<style>
+/* Studio family (same palette and font as the seller dashboard) + Zepto-style product grid. */
+:root{--violet:#6e2c7a;--hdr:#fcf6f0;--soft:#f4ecf5;--ink:#2a1b3d;--muted:#8b8494;--line:#eee7e0;--bg:#f7f2ec;--card:#fff;
+ --teal:#9cd0d4;--teal-d:#5fa9af;--orange:#ff7a47;--green:#6e2c7a;--green-d:#561f61;--radius:16px}
+body{font-family:"Poppins","Noto Sans",system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+h1,h2,.price,.pad h3,.shead b,.totals .grand,.card .ph,.gallery .ph,.logo{font-family:"Poppins","Noto Sans",sans-serif}
+header{background:var(--hdr);color:var(--ink);padding:18px 16px 46px;border-radius:0 0 28px 28px}
+header:after{right:-60px;top:-70px;width:220px;height:220px;background:radial-gradient(circle,#9cd0d4 0%,rgba(156,208,212,0) 70%);opacity:.8}
+header:before{content:"";position:absolute;left:-50px;bottom:-60px;width:180px;height:180px;border-radius:50%;background:radial-gradient(circle,#f3e1c8 0%,rgba(243,225,200,0) 70%)}
+header.banner{color:#fff}
+header.banner .langsel{background:rgba(255,255,255,.2);color:#fff;border-color:rgba(255,255,255,.5)}
+header.banner .badges span{background:rgba(255,255,255,.22);color:#fff;border-color:transparent}
+.logo{width:54px;height:54px;border-radius:50%;background:var(--teal);color:#fff;border:3px solid #fff;font-weight:700;font-size:1.4rem;box-shadow:0 6px 16px rgba(95,169,175,.35)}
+h1{font-weight:700;font-size:1.3rem;letter-spacing:-.01em}
+.tagline{font-weight:500;font-size:.85rem;opacity:.8}
+.addr{opacity:.7}
+.langsel{background:#fff;color:var(--ink);border:1px solid var(--line)}
+.badges span{background:#fff;color:var(--ink);border:1px solid var(--line);font-weight:500;font-size:.76rem}
+.searchbox{margin-top:-26px}
+.searchbox input{border-radius:14px;border:1px solid var(--line);box-shadow:0 10px 26px rgba(70,45,20,.08);padding-top:14px;padding-bottom:14px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' fill='none' stroke='%236e2c7a' stroke-width='2.5' stroke-linecap='round'%3E%3Ccircle cx='10' cy='10' r='7'/%3E%3Cpath d='m20 20-4.5-4.5'/%3E%3C/svg%3E")}
+.chips{gap:8px;padding:14px 16px}
+.chip{border:1px solid var(--line);box-shadow:none;font-weight:600;font-size:.85rem;min-height:40px;padding:8px 16px;background:#fff}
+.chip[aria-pressed=true]{background:var(--ink);color:#fff;border-color:var(--ink);box-shadow:none}
+main{max-width:1100px}
+h2{font-weight:700;font-size:1.05rem;margin:20px 2px 12px}
+h2:before{width:6px;height:18px;border-radius:4px}
+.grid{gap:12px}
+@media(min-width:640px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(min-width:900px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(min-width:1080px){.grid{grid-template-columns:repeat(5,minmax(0,1fr))}}
+/* Product card: photo on a soft tile, ADD sitting on the photo's bottom corner, price first. */
+.card{border:1px solid var(--line);box-shadow:none;border-radius:16px;overflow:visible;padding:8px}
+.card .ph{border-radius:12px;background:var(--soft);overflow:visible;color:var(--violet);font-weight:700;font-size:2.2rem}
+.card .ph img{border-radius:12px}
+.ph-act{position:absolute;right:6px;bottom:-16px;z-index:2;font-size:.95rem;font-weight:600;color:var(--ink)}
+.ph-act .qty span{font-size:.95rem;min-width:18px}
+.top,.badges,.searchbox,.chips{max-width:1100px}
+[dir=rtl] .ph-act{right:auto;left:6px}
+.card .body{padding:22px 4px 4px;gap:2px}
+.card .row{order:-1;margin-top:0;padding-top:0}
+.price{font-weight:700;font-size:1.02rem;color:var(--ink)}
+.card .name{font-weight:500;font-size:.88rem;line-height:1.3;color:var(--ink)}
+.card .from,.unit{font-size:.74rem;color:var(--muted)}
+.add{background:#fff;color:var(--violet);border:1.5px solid var(--violet);border-radius:10px;min-height:36px;min-width:64px;padding:0 16px;font-weight:700;font-size:.85rem;box-shadow:0 4px 10px rgba(110,44,122,.18);text-transform:uppercase;letter-spacing:.02em}
+.qty{background:var(--violet);border:0;border-radius:10px;color:#fff;box-shadow:0 4px 10px rgba(110,44,122,.25)}
+.qty button{color:#fff;width:34px;height:36px;font-size:1.1rem}
+.qty span{color:#fff;font-weight:700}
+.buy .qty{border-radius:14px}
+.buy .qty button{width:46px;height:52px}
+.out{background:rgba(42,27,61,.82);font-weight:600}
+.incart{background:var(--violet)}
+.bar{background:linear-gradient(180deg,rgba(247,242,236,0),var(--bg) 35%)}
+.bar button{background:var(--violet);border-radius:16px;box-shadow:0 12px 26px rgba(110,44,122,.35);font-weight:600}
+.bar .count{color:var(--violet)}
+.big{background:var(--ink);border-radius:14px;font-weight:600}
+.big.green{background:var(--violet)}
+.size{border:1.5px solid var(--line);border-radius:12px;font-weight:600}
+.size small{color:var(--violet)}
+.size[aria-pressed=true]{border-color:var(--violet);background:var(--soft);box-shadow:0 0 0 1.5px var(--violet) inset}
+.pay label{border:1.5px solid var(--line);border-radius:12px;font-weight:600}
+.pay input{accent-color:var(--violet)}
+.pay label:has(input:checked){border-color:var(--violet);background:var(--soft)}
+form input,form textarea{border:1.5px solid var(--line);border-radius:12px}
+form input:focus,form textarea:focus{border-color:var(--violet);box-shadow:0 0 0 4px var(--soft)}
+.totals .grand{color:var(--ink);font-weight:700}
+.close{background:var(--soft)}
+table.nut{background:var(--hdr)}
+table.nut td{border-bottom-color:var(--line)}
+.about{border:1px solid var(--line);box-shadow:none}
+.notice{border-radius:14px}
+.hint{background:var(--hdr);color:var(--ink);border:1px solid #f3e1c8}
+:focus-visible{outline-color:var(--teal-d)}
+</style></head>
 <body>
 <header>
  <div class="top">
@@ -487,7 +532,8 @@ footer{text-align:center;color:var(--muted);font-size:.78rem;padding:28px 16px}
 <script>
 const D = JSON.parse(document.getElementById("data").textContent);
 const T = D.texts, R = D.rules;
-const COLORS = D.palette || ["#7c3aed","#db2777","#f97316","#0891b2","#16a34a","#ca8a04","#4f46e5","#e11d48","#0d9488","#9333ea"];
+// Studio palette: purple, teal, orange and their softer shades (same family as the dashboard).
+const COLORS = ["#6e2c7a","#5fa9af","#ff7a47","#8d5a99","#e0663a","#7fbec4"];
 const KEY = "rira-cart-" + D.shop.id;
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -531,6 +577,7 @@ function header() {
   $("#logo").textContent = (D.shop.name.trim()[0] || "S").toUpperCase();
   if (D.shop.logo) $("#logo").innerHTML = `<img src="${esc(D.shop.logo)}" alt="">`;
   $("#shopTagline").textContent = D.shop.tagline;
+  if (D.shop.banner) document.querySelector("header").classList.add("banner");
   if (D.shop.banner) document.querySelector("header").style.backgroundImage =
     `linear-gradient(180deg,rgba(17,12,34,.35),rgba(17,12,34,.7)),url("${D.shop.banner.replace(/"/g, "")}")`;
   if (D.shop.about) {
@@ -565,13 +612,14 @@ function card(p) {
   let control;
   if (!avail) control = "";
   else if (!multi && n > 0) control = `<div class="qty" role="group" aria-label="${esc(p.name)}"><button data-dec="${p.id}" aria-label="−">−</button><span aria-live="polite">${n}</span><button data-inc="${p.id}" aria-label="+">+</button></div>`;
-  else control = `<button class="add" data-add="${p.id}" aria-label="${esc(T.add + " " + p.name)}">${multi ? T.add + " ▾" : "+ " + T.add}</button>`;
+  else control = `<button class="add" data-add="${p.id}" aria-label="${esc(T.add + " " + p.name)}">${multi ? T.add + " ▾" : esc(T.add)}</button>`;
   return `<article class="card" data-open="${p.id}" tabindex="0" aria-label="${esc(p.name)}">
    <div class="ph" style="--c:${prodColor(p)}">${p.images.length ? `<img src="${esc(p.images[0])}" alt="" loading="lazy">` : esc(p.name.trim()[0] || "?")}
-   ${avail ? "" : `<span class="out">${esc(T.sold_out)}</span>`}${n ? `<span class="incart">${n}</span>` : ""}</div>
-   <div class="body"><div class="name">${esc(p.name)}</div>
-   ${multi ? `<div class="from">${p.variants.map((v) => esc(v.label)).join(" · ")}</div>` : ""}
-   <div class="row"><div><span class="price">${money(p.variants.length ? Math.min(...p.variants.map((v) => v.price)) : p.price)}</span>${!p.variants.length && p.unit ? ` <span class="unit">/ ${esc(p.unit)}</span>` : ""}</div>${control}</div></div></article>`;
+   ${avail ? "" : `<span class="out">${esc(T.sold_out)}</span>`}${n && multi ? `<span class="incart">${n}</span>` : ""}
+   ${control ? `<div class="ph-act">${control}</div>` : ""}</div>
+   <div class="body"><div class="row"><div><span class="price">${money(p.variants.length ? Math.min(...p.variants.map((v) => v.price)) : p.price)}</span>${!p.variants.length && p.unit ? ` <span class="unit">/ ${esc(p.unit)}</span>` : ""}</div></div>
+   <div class="name">${esc(p.name)}</div>
+   ${multi ? `<div class="from">${p.variants.map((v) => esc(v.label)).join(" · ")}</div>` : ""}</div></article>`;
 }
 
 function renderGrid() {

@@ -104,7 +104,7 @@ def _brand_head(b: models.Business | None) -> tuple[str, str, str]:
     from routers.settings import shop_image_url
     from routers.shop import _shade
 
-    color = b.brand_color or "#4338ca"
+    color = "#6e2c7a"  # studio palette, same as the shop page and dashboard
     dark = _shade(color, 0.62)
     logo = shop_image_url(b.logo_image_id)
     mark = (f"<img src='{escape(logo)}' alt=''>" if logo else f"<span>{escape((b.name.strip() or 'S')[0].upper())}</span>")

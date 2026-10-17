@@ -1116,7 +1116,8 @@ def test_shop_branding(client):
     logo = client.get("/shop/media/" + out["logo_url"].rsplit("/", 1)[1])
     assert logo.status_code == 200 and logo.headers["content-type"] == "image/png"
     page = client.get(f"/shop/{business_id}").text
-    assert "--violet:#E11D48" in page and "Fresh every morning" in page and "Home bakery since 2019" in page
+    # Every shop uses the shared studio palette now; the brand colour setting no longer recolours it.
+    assert "--violet:#6e2c7a" in page and "#E11D48" not in page and "Fresh every morning" in page and "Home bakery since 2019" in page
     assert client.delete("/business/images/logo", headers=h).json()["logo_url"] is None
     # A very light brand colour still gives readable (darker) text.
     client.patch("/business", json={"brand_color": "#FDE68A"}, headers=h)
