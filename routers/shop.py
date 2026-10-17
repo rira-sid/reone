@@ -442,7 +442,7 @@ footer{text-align:center;color:var(--muted);font-size:.78rem;padding:28px 16px}
 </style>
 <style>
 /* Studio family (same palette and font as the seller dashboard) + Zepto-style product grid. */
-:root{--violet:#6e2c7a;--hdr:#fcf6f0;--soft:#f4ecf5;--ink:#2a1b3d;--muted:#8b8494;--line:#eee7e0;--bg:#f7f2ec;--card:#fff;
+:root{--violet:#6e2c7a;--hdr:#fcf6f0;--soft:#f4ecf5;--ink:#2a1b3d;--muted:#574f63;--line:#eee7e0;--bg:#f7f2ec;--card:#fff;
  --teal:#9cd0d4;--teal-d:#5fa9af;--orange:#ff7a47;--green:#6e2c7a;--green-d:#561f61;--radius:16px}
 body{font-family:"Poppins","Noto Sans",system-ui,sans-serif;background:var(--bg);color:var(--ink)}
 h1,h2,.price,.pad h3,.shead b,.totals .grand,.card .ph,.gallery .ph,.logo{font-family:"Poppins","Noto Sans",sans-serif}
