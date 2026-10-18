@@ -415,10 +415,10 @@ def test_catalog_builder_sizes_photos_nutrition(client):
 
     import base64
     jpeg = "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8\xff fake jpeg").decode()
-    for _ in range(4):
+    for _ in range(8):
         p = client.post(f"/products/{p['id']}/images", json={"data": jpeg}, headers=h).json()
-    assert len(p["images"]) == 4
-    assert client.post(f"/products/{p['id']}/images", json={"data": jpeg}, headers=h).status_code == 400  # max 4
+    assert len(p["images"]) == 8
+    assert client.post(f"/products/{p['id']}/images", json={"data": jpeg}, headers=h).status_code == 400  # max 8
     assert client.post(f"/products/{p['id']}/images", json={"data": "data:text/html;base64,PGI+"},
                        headers=h).status_code == 400
     last = p["images"][-1]["id"]
@@ -427,7 +427,7 @@ def test_catalog_builder_sizes_photos_nutrition(client):
     img = client.get(p["images"][0]["url"].split(".com", 1)[-1])
     assert img.status_code == 200 and img.headers["content-type"] == "image/jpeg" and img.content.startswith(b"\xff\xd8")
     p = client.delete(f"/products/{p['id']}/images/{last}", headers=h).json()
-    assert len(p["images"]) == 3
+    assert len(p["images"]) == 7
 
     # Edit sizes: rename one, drop one, add one.
     v100 = p["variants"][0]

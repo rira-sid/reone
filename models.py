@@ -1,3 +1,5 @@
+import json
+
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Text, Boolean, LargeBinary, Date
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -106,8 +108,12 @@ class Product(Base):
     unit = Column(String, default="pcs")
     category = Column(String, nullable=True)
     description = Column(Text, nullable=True)
-    # Free text, one fact per line: "Energy: 120 kcal". Shown as a table on the shop page.
+    # Free text, one fact per line: "Energy: 120 kcal" / "Fabric: Cotton". Shown as a table on the shop
+    # page - "Nutrition" for food shops, "Details" for everyone else (the seller's own fields).
     nutrition = Column(Text, nullable=True)
+    # What the sizes/variants vary by: JSON list of up to two names, e.g. ["Size", "Colour"].
+    # None = one plain list of sizes/packs (variant.label only).
+    option_names = Column(Text, nullable=True)
     # Products that appear on past orders are hidden instead of deleted, so old orders and
     # invoices still show what was bought.
     is_active = Column(Boolean, default=True, nullable=False)
@@ -123,6 +129,14 @@ class Product(Base):
     def active_variants(self) -> list["ProductVariant"]:
         return [v for v in self.variants if v.is_active]
 
+    @property
+    def options(self) -> list[str]:
+        try:
+            names = json.loads(self.option_names or "[]")
+        except ValueError:
+            return []
+        return [n for n in names if isinstance(n, str) and n.strip()][:2]
+
 
 class ProductVariant(Base):
     """A size / pack of a product (100g, 250g, S, M, XL...), each with its own price and stock.
@@ -131,7 +145,10 @@ class ProductVariant(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
-    label = Column(String, nullable=False)
+    label = Column(String, nullable=False)  # "M / Red" - built from the options when the product has them
+    option1 = Column(String, nullable=True)
+    option2 = Column(String, nullable=True)
+    image_id = Column(Integer, nullable=True)  # this combination's own photo (one of the product's photos)
     price = Column(Float, nullable=False)
     stock = Column(Integer, default=0, nullable=False)
     position = Column(Integer, default=0, nullable=False)
@@ -458,6 +475,7 @@ class ProductTranslation(Base):
     category = Column(String, nullable=True)
     nutrition = Column(Text, nullable=True)
     sizes_json = Column(Text, nullable=True)  # labels in the same order as the product's sizes
+    options_json = Column(Text, nullable=True)  # option names ("Size", "Colour") in this language
     source_hash = Column(String, nullable=True)  # English text it was made from
     edited = Column(Boolean, default=False, nullable=False)  # seller corrected it by hand
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

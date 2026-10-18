@@ -116,13 +116,26 @@ def _catalog_json(business: models.Business, products: list[models.Product], tr:
         active = p.active_variants
         if len(sizes) != len(active):
             sizes = [v.label for v in active]
-        variants = [{"id": v.id, "label": label, "price": v.price, "stock": v.stock} for v, label in zip(active, sizes)]
+        options = p.options
+        names = json.loads(row.options_json or "[]") if row and row.options_json else []
+        if len(names) != len(options):
+            names = options
+        images = {i.id: image_url(i) for i in p.images}
+        variants = []
+        for v, label in zip(active, sizes):
+            # The translated label "M / சிவப்பு" splits back into the two option values.
+            parts = [x.strip() for x in label.split(" / ")] if len(options) > 1 else [label]
+            if len(parts) != max(len(options), 1):
+                parts = [v.option1 or label, v.option2] if options else [label]
+            variants.append({"id": v.id, "label": label, "price": v.price, "stock": v.stock,
+                             "o1": parts[0] if options else None, "o2": parts[1] if len(options) > 1 else None,
+                             "image": images.get(v.image_id)})
         out.append({
             "id": p.id, "name": (row.name if row else p.name),
             "alt": p.name if row else "",  # English name, so searching in English still works
             "category": category_label.get(p.category, p.category or ""),
             "description": (row.description if row and row.description else p.description or ""),
-            "unit": p.unit or "", "price": p.price, "stock": p.stock, "variants": variants,
+            "unit": p.unit or "", "price": p.price, "stock": p.stock, "variants": variants, "options": names,
             "images": [image_url(i) for i in p.images],
             "nutrition": _nutrition_rows(row.nutrition if row and row.nutrition else p.nutrition),
         })
@@ -179,6 +192,7 @@ def catalog(shop_key: str, request: Request, background: BackgroundTasks, c: str
     }
     data = {
         "shop": {"id": business.id, "name": business.name, "address": business.address or "",
+                 "type": business.business_type or "",
                  "tagline": business.tagline or "", "about": business.about or "",
                  "logo": shop_image_url(business.logo_image_id), "banner": shop_image_url(business.banner_image_id)},
         "products": _catalog_json(business, products, translations_for(db, products, code)),
@@ -568,6 +582,7 @@ table.nut td{border-bottom-color:var(--line)}
 .notice{border-radius:14px}
 .hint{background:var(--hdr);color:var(--ink);border:1px solid #f3e1c8}
 .hint.ok{background:#eaf6f7;border-color:#9cd0d4}
+.size[data-out]{opacity:.45;text-decoration:line-through}
 :focus-visible{outline-color:var(--teal-d)}
 </style></head>
 <body>
@@ -728,22 +743,44 @@ function openProduct(pid) {
   const p = byId[pid];
   let vid = p.variants.length ? (p.variants.find((v) => v.stock > 0) || p.variants[0]).id : null;
   let q = 1;
-  const imgs = p.images.length ? p.images.map((u, i) => `<img src="${esc(u)}" alt="${esc(p.name)} ${i + 1}">`).join("")
-    : `<div class="ph" style="--c:${prodColor(p)}">${esc(p.name.trim()[0] || "?")}</div>`;
+  const two = p.options.length > 1;
+  // With options (Size, Colour) the customer picks one value per option; the matching combination is the variant.
+  const values = (k) => [...new Set(p.variants.map((v) => v[k]).filter(Boolean))];
+  const pickValue = (k, value) => {
+    const cur = variantOf(p, vid) || {}, other = k === "o1" ? "o2" : "o1";
+    const same = (v) => v[k] === value;
+    const match = p.variants.find((v) => same(v) && (!two || v[other] === cur[other]) && v.stock > 0)
+      || p.variants.find((v) => same(v) && v.stock > 0) || p.variants.find(same);
+    if (match) vid = match.id;
+  };
+  const inStock = (k, value) => {
+    const cur = variantOf(p, vid) || {};
+    return p.variants.some((v) => v[k] === value && v.stock > 0 && (k === "o1" || !two || v.o1 === cur.o1));
+  };
   const draw = () => {
-    const price = vid ? variantOf(p, vid).price : p.price, st = stockOf(p, vid);
+    const v = vid ? variantOf(p, vid) : null, price = v ? v.price : p.price, st = stockOf(p, vid);
+    // The chosen combination's own photo comes first.
+    const photos = v && v.image ? [v.image, ...p.images.filter((u) => u !== v.image)] : p.images;
+    const imgs = photos.length ? photos.map((u, i) => `<img src="${esc(u)}" alt="${esc(p.name)} ${i + 1}">`).join("")
+      : `<div class="ph" style="--c:${prodColor(p)}">${esc(p.name.trim()[0] || "?")}</div>`;
+    const chooser = !p.variants.length ? "" : p.options.length
+      ? ["o1", "o2"].slice(0, p.options.length).map((k, i) => `<div class="label">${esc(p.options[i])}${v && v[k] ? ": <b>" + esc(v[k]) + "</b>" : ""}</div>
+         <div class="sizes" role="group">${values(k).map((val) => `<button class="size" data-o="${k}" data-val="${esc(val)}" aria-pressed="${!!v && v[k] === val}" ${inStock(k, val) ? "" : "data-out=1"}>${esc(val)}</button>`).join("")}</div>`).join("")
+      : `<div class="label">${esc(T.choose_size)}</div><div class="sizes" role="group">${p.variants.map((x) =>
+        `<button class="size" data-v="${x.id}" aria-pressed="${x.id === vid}" ${x.stock > 0 ? "" : "disabled"}>${esc(x.label)}<small>${money(x.price)}</small></button>`).join("")}</div>`;
+    const food = !D.shop.type || D.shop.type === "food";
     openSheet(`<div class="gallery" id="gal">${imgs}</div>
-     ${p.images.length > 1 ? `<div class="dots" id="dots">${p.images.map((_, i) => `<i class="${i ? "" : "on"}"></i>`).join("")}</div>` : ""}
+     ${photos.length > 1 ? `<div class="dots" id="dots">${photos.map((_, i) => `<i class="${i ? "" : "on"}"></i>`).join("")}</div>` : ""}
      <div class="pad"><h3>${esc(p.name)}</h3>
       <div><span class="price" style="font-size:1.5rem">${money(price)}</span>${!p.variants.length && p.unit ? ` <span class="unit">/ ${esc(p.unit)}</span>` : ""}</div>
       ${p.description ? `<p class="desc">${esc(p.description)}</p>` : ""}
-      ${p.variants.length ? `<div class="label">${esc(T.choose_size)}</div><div class="sizes" role="group">${p.variants.map((v) =>
-        `<button class="size" data-v="${v.id}" aria-pressed="${v.id === vid}" ${v.stock > 0 ? "" : "disabled"}>${esc(v.label)}<small>${money(v.price)}</small></button>`).join("")}</div>` : ""}
-      ${p.nutrition.length ? `<div class="label">🥗 ${esc(T.nutrition)}</div><table class="nut">${p.nutrition.map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join("")}</table>` : ""}
+      ${chooser}
+      ${p.nutrition.length ? `<div class="label">${food ? "🥗 " + esc(T.nutrition) : "📋 " + esc(T.details)}</div><table class="nut">${p.nutrition.map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join("")}</table>` : ""}
       ${R.open ? `<div class="buy">${st > 0 ? `<div class="qty"><button data-q="-1" aria-label="−">−</button><span aria-live="polite">${q}</span><button data-q="1" aria-label="+">+</button></div>` : ""}
       <button class="big green" id="addBtn" ${st > 0 ? "" : "disabled"}>${st > 0 ? "🛒 " + esc(T.add) + " · " + money(price * q) : esc(T.sold_out)}</button></div>` : ""}
      </div>`, p.name);
     $("#panel").querySelectorAll("[data-v]").forEach((b) => b.onclick = () => { vid = +b.dataset.v; q = 1; draw(); });
+    $("#panel").querySelectorAll("[data-o]").forEach((b) => b.onclick = () => { pickValue(b.dataset.o, b.dataset.val); q = 1; draw(); });
     $("#panel").querySelectorAll("[data-q]").forEach((b) => b.onclick = () => { q = Math.max(1, Math.min(q + +b.dataset.q, st, 99)); draw(); });
     const add = $("#addBtn");
     if (add) add.onclick = () => { setQty(p.id, vid, qtyIn(p.id, vid) + q); closeSheet(); };

@@ -116,10 +116,14 @@ def _catalog_text(products: list[models.Product]) -> str:
     for p in sorted(products, key=lambda p: ((p.category or "").lower(), p.name.lower())):
         category = f"[{p.category}] " if p.category else ""
         description = f" - {p.description}" if p.description else ""
+        facts = "; ".join(line.strip() for line in (p.nutrition or "").splitlines() if line.strip())
+        if facts:
+            description += f" | details: {facts}"
         variants = p.active_variants
         if variants:
+            kind = " / ".join(p.options) if p.options else "sizes"
             sizes = "; ".join(f"variant_id {v.id}: {v.label} ₹{v.price:g} (in stock: {v.stock})" for v in variants)
-            lines.append(f"- id {p.id}: {category}{p.name} - sizes: {sizes}{description}")
+            lines.append(f"- id {p.id}: {category}{p.name} - {kind}: {sizes}{description}")
         else:
             lines.append(f"- id {p.id}: {category}{p.name} - ₹{p.price:g} per {p.unit} (in stock: {p.stock}){description}")
     return "\n".join(lines)

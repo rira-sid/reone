@@ -4,7 +4,10 @@ from pydantic import BaseModel, ConfigDict
 
 class VariantIn(BaseModel):
     id: int | None = None
-    label: str
+    label: str = ""
+    option1: str | None = None
+    option2: str | None = None
+    image_id: int | None = None
     price: float
     stock: int = 0
 
@@ -12,6 +15,9 @@ class VariantIn(BaseModel):
 class VariantOut(BaseModel):
     id: int
     label: str
+    option1: str | None = None
+    option2: str | None = None
+    image_id: int | None = None
     price: float
     stock: int
 
@@ -33,6 +39,7 @@ class ProductBase(BaseModel):
     category: str | None = None
     description: str | None = None
     nutrition: str | None = None
+    option_names: list[str] | None = None
 
 
 class ProductCreate(ProductBase):
@@ -47,6 +54,7 @@ class ProductUpdate(BaseModel):
     category: str | None = None
     description: str | None = None
     nutrition: str | None = None
+    option_names: list[str] | None = None
     variants: list[VariantIn] | None = None
 
 

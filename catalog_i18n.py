@@ -23,6 +23,7 @@ class _LangText(BaseModel):
     category: str = ""
     nutrition: str = ""
     sizes: list[str] = []
+    options: list[str] = []
 
 
 class _AllLangs(BaseModel):
@@ -36,6 +37,8 @@ def english(product: models.Product) -> dict:
         "category": product.category or "",
         "nutrition": product.nutrition or "",
         "sizes": [v.label for v in product.active_variants],
+        # Only products with options carry this key, so older products keep their source hash.
+        **({"options": product.options} if product.options else {}),
     }
 
 
@@ -58,13 +61,15 @@ async def _ask_gemini(source: dict, shop_name: str) -> dict[str, _LangText]:
     names = ", ".join(f"{code} = {LANGUAGES[code][1]}" for code in TARGETS)
     prompt = f"""Translate this product from a small shop ("{shop_name}") for customers who read other languages.
 Languages (code = language): {names}.
-Return one item per language code with: name, description, category, nutrition, sizes.
+Return one item per language code with: name, description, category, nutrition, sizes, options.
 Rules:
 - Natural, simple words a shopper uses. Food names: use the common local name if one exists
   (e.g. "Pepper Powder" -> Tamil "மிளகுத் தூள்"), otherwise transliterate.
 - Keep brand names, numbers, units (g, kg, ml, pcs) and ₹ prices exactly.
 - nutrition: keep one fact per line as "Label: value", same number of lines, values unchanged.
-- sizes: same count and order as the English list; translate words (Small, Large) but keep "100g" as is.
+- sizes: same count and order as the English list; translate words (Small, Large, Red) but keep "100g", "XL" and
+  model numbers as is; keep the " / " between two parts.
+- options: the names of what the product varies by (e.g. Size, Colour), same count and order; [] if not given.
 - Empty English field -> empty string.
 
 English product (JSON):
@@ -96,6 +101,8 @@ async def translate_product(db, product: models.Product, force: bool = False) ->
         row.name, row.description = item.name.strip()[:200], item.description.strip()
         row.category, row.nutrition = item.category.strip()[:80], item.nutrition.strip()
         row.sizes_json = json.dumps(sizes, ensure_ascii=False)
+        options = source.get("options", [])
+        row.options_json = json.dumps(item.options if len(item.options) == len(options) else options, ensure_ascii=False)
         row.source_hash, row.edited = h, False
         db.add(row)
         written += 1

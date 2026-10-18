@@ -43,5 +43,6 @@
  "pincode_needed": "Please enter your PIN code",
  "no_delivery_area": "Sorry, we don't deliver to this area yet.",
  "area_check": "We need to check delivery to your area. The shop has been told and will message you on WhatsApp shortly.",
- "expected_delivery": "Expected delivery: {when}"
+ "expected_delivery": "Expected delivery: {when}",
+ "details": "Details"
 }
