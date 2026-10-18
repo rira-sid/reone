@@ -477,6 +477,7 @@ class Incident(Base):
     resolved_at = Column(DateTime(timezone=True), nullable=True)
 
     conversation = relationship("Conversation")
+    order = relationship("Order", foreign_keys=[order_id])
 
     @property
     def number(self) -> str:

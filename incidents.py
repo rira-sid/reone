@@ -93,6 +93,7 @@ def overdue(incident: models.Incident, now: datetime | None = None) -> bool:
 
 def incident_dict(incident: models.Incident) -> dict:
     c = incident.conversation
+    order = incident.order
     return {
         "id": incident.id, "number": incident.number, "category": incident.category,
         "category_label": CATEGORY_LABEL.get(incident.category, "Issue"), "summary": incident.summary,
@@ -103,4 +104,8 @@ def incident_dict(incident: models.Incident) -> dict:
         "phone": c.phone if c else None, "created_at": _utc(incident.created_at),
         "updated_at": _utc(incident.updated_at), "resolved_at": _utc(incident.resolved_at),
         "overdue": overdue(incident),
+        # What the Issues page needs to offer the right fixes (a refund only on a paid order).
+        "order_total": order.total_amount if order else None,
+        "order_paid": bool(order and order.is_paid),
+        "order_paid_online": bool(order and order.razorpay_payment_id),
     }

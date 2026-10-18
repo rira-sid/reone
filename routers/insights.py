@@ -102,6 +102,8 @@ def stats(db: Session = Depends(get_db), business: models.Business = Depends(cur
         "to_ship": sum(1 for o in orders if o.is_paid and o.status in ("Confirmed", "Packed")),
         "needs_you": needs_you,
         "unread": unread_chats(db, business.id),
+        "open_issues": db.query(models.Incident).filter(
+            models.Incident.business_id == business.id, models.Incident.status != "resolved").count(),
         "low_stock": low_stock,
         "total_orders": len(orders),
         "daily": daily,
