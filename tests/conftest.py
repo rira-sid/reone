@@ -65,13 +65,15 @@ class FakeAI:
         return ai.AssistantTurn(**{**base, **overrides})
 
     async def run_turn(self, shop_name, conversation, products, image=None, recent_orders=None, policies="",
-                       audio=None, language="English", profile="", open_items="", welcome_note="", new_after=None):
+                       audio=None, language="English", profile="", open_items="", welcome_note="", new_after=None,
+                       knowledge=""):
         import ai as _ai
 
         self.calls.append({"shop": shop_name, "products": [p.name for p in products], "image": image,
                            "orders": [o.id for o in recent_orders or []], "policies": policies, "audio": audio,
                            "language": language, "profile": profile, "open_items": open_items,
-                           "welcome_note": welcome_note, "transcript": _ai._transcript(conversation, new_after)})
+                           "welcome_note": welcome_note, "knowledge": knowledge,
+                           "transcript": _ai._transcript(conversation, new_after)})
         return self.queue.pop(0) if self.queue else self.turn()
 
 

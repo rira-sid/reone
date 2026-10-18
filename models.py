@@ -48,6 +48,9 @@ class Business(Base):
     # "Usually delivered in 2-4 days" - shown to customers as an expected delivery date.
     delivery_days_min = Column(Integer, nullable=True)
     delivery_days_max = Column(Integer, nullable=True)
+    # What the shop sells (food, clothing, accessories, electronics, beauty, home) - picks ready-made
+    # questions, product options and wording. None = not chosen yet.
+    business_type = Column(String, nullable=True)
 
     # Customer chat: a welcome line the seller writes (shown after the language picker), and the
     # seller's own WhatsApp number that gets an instant alert whenever a customer asks a question.
@@ -461,6 +464,22 @@ class ProductTranslation(Base):
 
 
 INCIDENT_STATUSES = ["open", "in_progress", "resolved"]
+
+
+class ShopAnswer(Base):
+    """Shop knowledge: one question and the seller's answer, used by the bot for every customer.
+    key = a ready-made question's key (knowledge.READY), None for the seller's own questions."""
+    __tablename__ = "shop_answers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False, index=True)
+    key = Column(String, nullable=True)
+    question = Column(Text, nullable=False)
+    answer = Column(Text, nullable=False)
+    source = Column(String, default="seller", nullable=False)  # seller | chat (saved from a chat reply)
+    product_id = Column(Integer, nullable=True)  # an answer about one product
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class DeliveryZone(Base):

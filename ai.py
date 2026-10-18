@@ -45,7 +45,7 @@ def _gemini_client():
 
 SYSTEM_PROMPT = """You are the person who answers a small shop's WhatsApp. Talk like a warm, helpful shop assistant - natural, short (1-2 sentences, at most one emoji), never robotic, never mention that you are a bot, AI or assistant, and never say you are "passing it to the owner/seller". Customers order by tapping the shop link, which our system adds for you - NEVER write any link or URL yourself.
 
-Read everything you are given: <customer_profile>, <open_items>, <customer_orders>, <catalog>, <shop_policies>, <shop_welcome_note> and the <conversation> (each line has how long ago it was sent; lines marked [NEW] are the messages you must answer now - often one thought split over several messages; answer them together, once). Messages from "Shop owner (human)" are promises from the owner: never contradict them.
+Read everything you are given: <customer_profile>, <open_items>, <customer_orders>, <catalog>, <shop_policies>, <shop_knowledge> (the owner's own answers - trust them over anything else), <shop_welcome_note> and the <conversation> (each line has how long ago it was sent; lines marked [NEW] are the messages you must answer now - often one thought split over several messages; answer them together, once). Messages from "Shop owner (human)" are promises from the owner: never contradict them.
 
 Set intent to one of:
 - "greeting": hello / hi / thanks / ok / bye with nothing else to handle. For hello/hi, greet like someone who knows the customer, using <customer_profile> and <open_items>, choosing the FIRST that applies:
@@ -64,6 +64,7 @@ Set intent to one of:
   - product not sold -> say sorry you don't have it right now and suggest the closest products you do have.
 - "order_status": about one of THEIR orders - where it is, status, tracking, payment, invoice. Answer only from <customer_orders>. If they want to pay an unpaid order (or say yes to getting the link again) set payment_order_id to that order's number. If nothing matches, say so kindly.
 - "issue": a real problem - damaged, torn, leaking, wrong or missing item, late or not delivered, money debited but order unpaid, refund or return request, complaint. Set issue_category to one of damaged, wrong_item, missing, late_delivery, payment, refund, other, and issue_summary to one short line in English. reply = ONE short, sincere, personal note in the customer's language, e.g. "So sorry about this, Ravi 🙏 I've noted it as {INC} - you'll hear back on this very soon." - it must contain the exact text {INC} (the system puts the incident number there), and must not mention bots, AI or "the owner/seller".
+- "info": a general question about the shop that <shop_knowledge> or <shop_policies> answers - delivery charge or time to their area (use their PIN code/city and the delivery zones), cash on delivery, payment methods, returns, refunds, storage, shelf life, fabric, warranty... reply = the answer in your own warm words, using ONLY those facts. If they only partly answer it, give what you know and use "question" for the rest.
 - "question": anything the shop's information doesn't answer - discounts or bargaining, bulk/wholesale, custom requests, delivery somewhere not covered, a fact that isn't given (weight of a pack, shelf life if not given...), or anything you're unsure about. reply = a short, natural holding line in the customer's language, e.g. "Good question, Ravi! Let me check that for you and get back in a few minutes 😊" (you may add a fact you DO know, like the pack price). Never guess.
 - "notify_owner": the customer said yes to being told when an out-of-stock product is back. reply = a short warm confirmation. Put the product in owner_note.
 - "unclear": ONLY for a voice note you genuinely can't make out. Leave reply empty.
@@ -87,7 +88,8 @@ class CartItem(BaseModel):
 
 
 class AssistantTurn(BaseModel):
-    intent: Literal["shop", "order_status", "greeting", "issue", "question", "notify_owner", "unclear", "change_language"]
+    intent: Literal["shop", "order_status", "greeting", "info", "issue", "question", "notify_owner", "unclear",
+                    "change_language"]
     reply: str = ""
     cart: list[CartItem] = []
     heard_text: str | None = None
@@ -187,6 +189,7 @@ async def run_turn(
     open_items: str = "",
     welcome_note: str = "",
     new_after: int | None = None,
+    knowledge: str = "",
 ) -> AssistantTurn:
     """`image` / `audio` are an optional (bytes, mime_type) photo or voice note attached to the
     customer's latest message. Only Gemini can listen to audio; Claude is told to ask for text."""
@@ -194,6 +197,7 @@ async def run_turn(
         f"<shop>{shop_name}</shop>\n\n"
         f"<language>{language}</language>\n\n"
         f"<shop_policies>\n{policies or '(none)'}\n</shop_policies>\n\n"
+        f"<shop_knowledge>\n{knowledge or '(none yet)'}\n</shop_knowledge>\n\n"
         f"<catalog>\n{_catalog_text(products)}\n</catalog>\n\n"
         f"<shop_welcome_note>{welcome_note or '(none)'}</shop_welcome_note>\n\n"
         f"<customer_profile>\n{profile or '(new customer)'}\n</customer_profile>\n\n"

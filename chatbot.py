@@ -19,6 +19,7 @@ import models
 from auth import sign_value
 from business import whatsapp_creds
 from database import SessionLocal
+import knowledge
 import zones
 from delivery import delivery_days
 from languages import FIRST_PAGE, LANGUAGES, available_languages, language_name, t
@@ -409,7 +410,8 @@ async def respond(conversation_id: int):
                                      audio=audio, language=language_name(conversation.preferred_language or "en"),
                                      profile=customer_profile(db, conversation, orders),
                                      open_items=open_items(db, conversation, orders),
-                                     welcome_note=business.welcome_message or "", new_after=handled_upto)
+                                     welcome_note=business.welcome_message or "", new_after=handled_upto,
+                                     knowledge=knowledge.knowledge_text(db, business))
         except ai.VoiceNotHeard as e:
             print("VOICE NOTE NOT HEARD:", repr(e))
             await _send_text(db, creds, conversation, t(conversation.preferred_language, "voice_unclear"))
@@ -457,6 +459,11 @@ async def respond(conversation_id: int):
             await notify_seller(db, business, f"🔔 {conversation.customer_name or 'A customer'} (+{conversation.phone}) "
                                               f"wants to know when this is back in stock: {turn.owner_note or combined}")
             await _send_text(db, creds, conversation, reply or "👍")
+        elif turn.intent == "info":
+            if reply:
+                await _send_text(db, creds, conversation, reply)
+            else:  # nothing to say from the shop's facts - ask the owner rather than stay silent
+                await route_to_seller(db, business, creds, conversation, combined)
         elif turn.intent == "unclear":
             await _send_text(db, creds, conversation, t(lang, "voice_unclear"))
         elif turn.intent == "shop":

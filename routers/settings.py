@@ -41,6 +41,7 @@ class BusinessOut(BaseModel):
     min_order_amount: float | None
     delivery_days_min: int | None = None
     delivery_days_max: int | None = None
+    business_type: str | None = None
     catalog_path: str
     slug: str | None
     # Secrets are write-only: the dashboard only learns whether they're set.
@@ -79,6 +80,7 @@ class BusinessUpdate(BaseModel):
     min_order_amount: float | None = None
     delivery_days_min: int | None = None
     delivery_days_max: int | None = None
+    business_type: str | None = None
     payment_method: str | None = None
     upi_id: str | None = None
     upi_name: str | None = None
@@ -127,6 +129,7 @@ def _out(business: models.Business) -> dict:
         "min_order_amount": business.min_order_amount,
         "delivery_days_min": business.delivery_days_min,
         "delivery_days_max": business.delivery_days_max,
+        "business_type": business.business_type,
         "catalog_path": shop_path(business),
         "slug": business.slug,
         "whatsapp_connected": whatsapp_creds(business) is not None,
@@ -195,6 +198,11 @@ def update_business(
         if field in data:
             value = data[field]
             setattr(business, field, value if value and value > 0 else None)
+    if "business_type" in data:
+        from knowledge import BUSINESS_TYPES
+        if data["business_type"] not in (*BUSINESS_TYPES, None):
+            raise HTTPException(status_code=400, detail="Unknown business type")
+        business.business_type = data["business_type"]
     for field in ("delivery_days_min", "delivery_days_max"):
         if field in data:
             value = data[field]
