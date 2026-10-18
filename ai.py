@@ -11,6 +11,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 import models
+from delivery import window_text
 
 AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini").lower()
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5-5")
@@ -160,6 +161,8 @@ def _orders_text(orders: list[models.Order]) -> str:
                           + (f", variant_id {i.variant_id})" if i.variant_id else ")") for i in o.items)
         payment = "paid" if o.is_paid else (f"unpaid - payment link {o.payment_link_url}" if o.payment_link_url else "unpaid")
         tracking = f", tracking: {o.tracking_info}" if o.tracking_info else ""
+        if o.expected_from and o.status not in ("Delivered", "Cancelled"):
+            tracking += f", expected delivery {window_text(o.expected_from, o.expected_to)}"
         placed = o.created_at.strftime("%d %b %Y") if o.created_at else "?"
         lines.append(f"- Order #{o.id} placed {placed}: {items}; total ₹{o.total_amount:g}; {payment}; status {o.status}{tracking}")
     return "\n".join(lines)

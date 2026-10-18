@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict
 
 
@@ -111,6 +111,8 @@ class OrderOut(BaseModel):
     payment_link_url: str | None = None
     paid_at: datetime | None = None
     tracking_info: str | None = None
+    expected_from: date | None = None
+    expected_to: date | None = None
     delivery_fee: float = 0.0
     discount_amount: float = 0.0
     payment_method: str = "online"

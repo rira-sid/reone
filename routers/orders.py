@@ -11,6 +11,7 @@ import schemas
 from auth import current_business
 from database import get_db
 from models import ORDER_STATUSES
+from delivery import expected_line, set_expected
 from notifications import notify_order_update
 from routers.invoices import invoice_path
 
@@ -26,6 +27,8 @@ def _serialize_order(order: models.Order) -> dict:
         "payment_link_url": order.payment_link_url,
         "paid_at": order.paid_at,
         "tracking_info": order.tracking_info,
+        "expected_from": order.expected_from,
+        "expected_to": order.expected_to,
         "delivery_fee": order.delivery_fee or 0.0,
         "discount_amount": order.discount_amount or 0.0,
         "payment_method": order.payment_method or "online",
@@ -102,6 +105,7 @@ def mark_order_paid(db: Session, order: models.Order, payment_id: str | None = N
         order.status = "Confirmed"
     if payment_id:
         order.razorpay_payment_id = payment_id
+    set_expected(order.business, order)
     reserve_stock(db, order)
 
 
@@ -174,6 +178,7 @@ def place_order(
     order.total_amount = subtotal + order.delivery_fee - (order.discount_amount or 0)
     if payment_method == "cod":
         order.status = "Confirmed"  # nothing to wait for - reserve the stock now
+        set_expected(business, order)
         db.flush()
         reserve_stock(db, order)
     return order
@@ -230,6 +235,8 @@ async def update_order_status(order_id: int, payload: schemas.OrderStatusUpdate,
         update = STATUS_UPDATES[payload.status]
         if payload.status == "Shipped" and order.tracking_info:
             update = f"{update} Tracking: {order.tracking_info}"
+        if payload.status == "Shipped" and expected_line(order):
+            update = f"{update} {expected_line(order)}"
         notified = await notify_order_update(db, business, order, update)
 
     return {**_serialize_order(order), "customer_notified": notified}
@@ -254,7 +261,9 @@ async def update_payment(order_id: int, payload: schemas.OrderPaymentUpdate, db:
         db.commit()
         db.refresh(order)
         if payload.notify_customer:
-            notified = await notify_order_update(db, business, order, "Your payment has been received. Thank you!")
+            eta = expected_line(order)
+            notified = await notify_order_update(
+                db, business, order, "Your payment has been received. Thank you!" + (f" {eta}" if eta else ""))
     elif not payload.is_paid and order.is_paid:
         order.is_paid = False
         order.paid_at = None

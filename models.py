@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Text, Boolean, LargeBinary
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Text, Boolean, LargeBinary, Date
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -45,6 +45,9 @@ class Business(Base):
     delivery_fee = Column(Float, default=0.0, nullable=False)
     free_delivery_above = Column(Float, nullable=True)
     min_order_amount = Column(Float, nullable=True)
+    # "Usually delivered in 2-4 days" - shown to customers as an expected delivery date.
+    delivery_days_min = Column(Integer, nullable=True)
+    delivery_days_max = Column(Integer, nullable=True)
 
     # Customer chat: a welcome line the seller writes (shown after the language picker), and the
     # seller's own WhatsApp number that gets an instant alert whenever a customer asks a question.
@@ -179,6 +182,9 @@ class Order(Base):
     razorpay_payment_id = Column(String, nullable=True, unique=True)
     paid_at = Column(DateTime(timezone=True), nullable=True)
     tracking_info = Column(Text, nullable=True)
+    # Expected delivery window, fixed when the order is confirmed (paid, or COD placed).
+    expected_from = Column(Date, nullable=True)
+    expected_to = Column(Date, nullable=True)
     delivery_fee = Column(Float, default=0.0, nullable=False)
     discount_amount = Column(Float, default=0.0, nullable=False)  # customer credit used (e.g. after an issue)
     payment_method = Column(String, default="online", nullable=False)  # "online" | "cod"

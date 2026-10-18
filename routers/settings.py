@@ -39,6 +39,8 @@ class BusinessOut(BaseModel):
     delivery_fee: float
     free_delivery_above: float | None
     min_order_amount: float | None
+    delivery_days_min: int | None = None
+    delivery_days_max: int | None = None
     catalog_path: str
     slug: str | None
     # Secrets are write-only: the dashboard only learns whether they're set.
@@ -75,6 +77,8 @@ class BusinessUpdate(BaseModel):
     delivery_fee: float | None = None
     free_delivery_above: float | None = None
     min_order_amount: float | None = None
+    delivery_days_min: int | None = None
+    delivery_days_max: int | None = None
     payment_method: str | None = None
     upi_id: str | None = None
     upi_name: str | None = None
@@ -121,6 +125,8 @@ def _out(business: models.Business) -> dict:
         "delivery_fee": business.delivery_fee or 0.0,
         "free_delivery_above": business.free_delivery_above,
         "min_order_amount": business.min_order_amount,
+        "delivery_days_min": business.delivery_days_min,
+        "delivery_days_max": business.delivery_days_max,
         "catalog_path": shop_path(business),
         "slug": business.slug,
         "whatsapp_connected": whatsapp_creds(business) is not None,
@@ -189,6 +195,12 @@ def update_business(
         if field in data:
             value = data[field]
             setattr(business, field, value if value and value > 0 else None)
+    for field in ("delivery_days_min", "delivery_days_max"):
+        if field in data:
+            value = data[field]
+            if value is not None and not 0 <= value <= 60:
+                raise HTTPException(status_code=400, detail="Delivery time must be between 0 and 60 days")
+            setattr(business, field, value)
 
     if "wa_phone_number_id" in data:
         phone_number_id = (data["wa_phone_number_id"] or "").strip() or None

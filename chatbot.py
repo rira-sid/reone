@@ -19,6 +19,7 @@ import models
 from auth import sign_value
 from business import whatsapp_creds
 from database import SessionLocal
+from delivery import delivery_days
 from languages import FIRST_PAGE, LANGUAGES, available_languages, language_name, t
 from routers.invoices import PUBLIC_BASE_URL
 import incidents
@@ -104,6 +105,10 @@ def shop_policies(business: models.Business) -> str:
         lines.append(rule)
     else:
         lines.append("Delivery: free")
+    days = delivery_days(business)
+    if days:
+        lines.append(f"Usual delivery time: {days[0]}-{days[1]} days after the order is confirmed" if days[0] != days[1]
+                     else f"Usual delivery time: {days[0]} days after the order is confirmed")
     if business.min_order_amount:
         lines.append(f"Minimum order value: ₹{business.min_order_amount:g} (before delivery fee)")
     lines.append("Cash on delivery: " + ("available" if business.cod_enabled else "not available - online payment only"))

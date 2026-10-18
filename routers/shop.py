@@ -17,6 +17,7 @@ import models
 import schemas
 from business import whatsapp_creds
 from database import get_db
+from delivery import expected_line
 from languages import LANGUAGES, RTL, TEXTS, available_languages, lang_code, language_name, t
 from routers.orders import place_order
 from routers.pay import effective_payment_method, pay_url, send_payment_request
@@ -286,6 +287,8 @@ async def checkout(business_id: int, payload: CheckoutIn, db: Session = Depends(
     can_message = within_service_window(conversation)
     if can_message:
         text = summary + ("\n\n" + t(code, "order_placed_cod", amount=f"{order.total_amount:g}") if method == "cod" else "")
+        if method == "cod" and expected_line(order):
+            text += "\n" + expected_line(order)
         try:
             await send_message(creds, phone, text)
             db.add(models.Message(conversation_id=conversation.id, sender="system", text=text))
