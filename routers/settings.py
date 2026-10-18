@@ -42,6 +42,7 @@ class BusinessOut(BaseModel):
     delivery_days_min: int | None = None
     delivery_days_max: int | None = None
     business_type: str | None = None
+    setup_completed: bool = False
     catalog_path: str
     slug: str | None
     # Secrets are write-only: the dashboard only learns whether they're set.
@@ -130,6 +131,7 @@ def _out(business: models.Business) -> dict:
         "delivery_days_min": business.delivery_days_min,
         "delivery_days_max": business.delivery_days_max,
         "business_type": business.business_type,
+        "setup_completed": business.setup_completed_at is not None,
         "catalog_path": shop_path(business),
         "slug": business.slug,
         "whatsapp_connected": whatsapp_creds(business) is not None,

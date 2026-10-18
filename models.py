@@ -53,6 +53,8 @@ class Business(Base):
     # What the shop sells (food, clothing, accessories, electronics, beauty, home) - picks ready-made
     # questions, product options and wording. None = not chosen yet.
     business_type = Column(String, nullable=True)
+    # When the seller finished (or closed) the one-time setup wizard; None = show it on login.
+    setup_completed_at = Column(DateTime(timezone=True), nullable=True)
 
     # Customer chat: a welcome line the seller writes (shown after the language picker), and the
     # seller's own WhatsApp number that gets an instant alert whenever a customer asks a question.
@@ -215,6 +217,8 @@ class Order(Base):
     # True while this order's items are taken out of product stock (paid, or a confirmed COD order).
     stock_deducted = Column(Boolean, default=False, nullable=False)
     payment_reminder_sent_at = Column(DateTime(timezone=True), nullable=True)
+    # The seller's own ₹1 order from the setup wizard - left out of sales numbers.
+    is_test = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     business = relationship("Business", back_populates="orders")

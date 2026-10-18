@@ -48,7 +48,7 @@ def setup_steps(db: Session, business: models.Business) -> dict:
 def _row(db: Session, business: models.Business, now: datetime) -> dict:
     since = now - timedelta(days=30)
     orders = db.query(models.Order).filter(
-        models.Order.business_id == business.id, models.Order.status != "Cancelled").all()
+        models.Order.is_test.is_(False), models.Order.business_id == business.id, models.Order.status != "Cancelled").all()
     recent = [o for o in orders if o.created_at and _utc(o.created_at) >= since]
     last_order = max((_utc(o.created_at) for o in orders if o.created_at), default=None)
     last_chat = db.query(func.max(models.Conversation.last_customer_message_at)).filter(

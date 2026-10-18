@@ -21,7 +21,7 @@ from chatbot import handle_incoming
 from migrate import add_missing_columns
 from reminders import reminder_loop
 from routers import products, orders, payments, conversations, settings, invoices, insights, shop, pay, admin
-from routers import account, delivery_zones, founder_ops, issues, knowledge
+from routers import account, delivery_zones, founder_ops, issues, knowledge, setup
 from routers.pay import handle_payment_status
 
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
@@ -65,6 +65,7 @@ app.include_router(products.router)
 app.include_router(orders.router)
 app.include_router(payments.router)
 app.include_router(conversations.router)
+app.include_router(setup.router)  # before settings: /business/setup
 app.include_router(settings.router)
 app.include_router(invoices.router)
 app.include_router(insights.router)
