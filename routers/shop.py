@@ -6,6 +6,7 @@ Links sent in WhatsApp carry `c` (the customer's number, signed - so it can't be
 (their chosen language) and optionally `add` (cart pre-filled from what they asked for in chat)."""
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from html import escape
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
@@ -16,8 +17,9 @@ from sqlalchemy.orm import Session
 import models
 import schemas
 from business import whatsapp_creds
+import zones
 from database import get_db
-from delivery import expected_line
+from delivery import IST, expected_line, window_text
 from languages import LANGUAGES, RTL, TEXTS, available_languages, lang_code, language_name, t
 from routers.orders import place_order
 from routers.pay import effective_payment_method, pay_url, send_payment_request
@@ -173,15 +175,17 @@ def catalog(shop_key: str, request: Request, background: BackgroundTasks, c: str
         "min_order": business.min_order_amount or 0, "cod": business.cod_enabled,
         "open": business.accepting_orders,
         "closed_message": business.closed_message or t(code, "closed"),
+        "zones": bool(zones.business_zones(db, business)),  # checkout asks for the PIN code and prices by zone
     }
     data = {
         "shop": {"id": business.id, "name": business.name, "address": business.address or "",
                  "tagline": business.tagline or "", "about": business.about or "",
                  "logo": shop_image_url(business.logo_image_id), "banner": shop_image_url(business.banner_image_id)},
         "products": _catalog_json(business, products, translations_for(db, products, code)),
-        "rules": rules, "lang": code, "texts": TEXTS[code], "token": c if phone else None,
+        "rules": rules, "lang": code, "texts": {**TEXTS["en"], **TEXTS[code]}, "token": c if phone else None,
         "customer": {"name": (customer.name if customer and customer.name != phone else ""),
-                     "address": customer.address if customer else "", "phone": phone or ""},
+                     "address": customer.address if customer else "", "phone": phone or "",
+                     "pincode": (customer.pincode or "") if customer else ""},
         "prefill": prefill,
         "languages": [[k, LANGUAGES[k][0]] for k in available_languages()],
         "whatsapp": _wa_link(business.phone),
@@ -198,6 +202,45 @@ def catalog(shop_key: str, request: Request, background: BackgroundTasks, c: str
 
 # ---- checkout --------------------------------------------------------------------------------
 
+class QuoteIn(BaseModel):
+    pincode: str | None = None
+    address: str | None = None
+    subtotal: float = 0
+
+
+@router.post("/{business_id}/quote")
+def quote(business_id: int, payload: QuoteIn, db: Session = Depends(get_db)):
+    """Delivery terms for an address, so the checkout shows the right fee, COD and date as the customer types."""
+    business = db.get(models.Business, business_id)
+    if not business or not business.is_live:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    terms = zones.terms_for(db, business, payload.pincode, payload.address)
+    eta = None
+    if terms.days:
+        today = datetime.now(IST).date()
+        eta = window_text(today + timedelta(days=terms.days[0]), today + timedelta(days=terms.days[1]))
+    return {"status": terms.status, "fee": terms.fee_for(payload.subtotal), "rate": terms.fee or 0,
+            "free_above": terms.free_above or 0,
+            "min_order": terms.min_order or 0, "cod": terms.cod, "eta": eta, "note": terms.note,
+            "zone": terms.zone.name if terms.zone else None}
+
+
+async def _ask_owner_about_area(db, business, conversation, name, address, pincode, items):
+    from seller_alerts import alert_seller
+
+    products = {p.id: p.name for p in db.query(models.Product).filter(models.Product.business_id == business.id)}
+    cart = ", ".join(f"{i.quantity} × {products.get(i.product_id, '?')}" for i in items if i.quantity > 0)
+    question = (f"Wants to order ({cart}) for delivery to: {address}" + (f" - PIN {pincode}" if pincode else "")
+                + ". This area isn't in your delivery zones - do you deliver there, and what's the charge?")
+    now = datetime.now(timezone.utc)
+    conversation.needs_seller = True
+    conversation.needs_seller_since = conversation.needs_seller_since or now
+    db.add(models.Message(conversation_id=conversation.id, sender="system",
+                          text=f"Checkout stopped: delivery area not in your zones ({address}"
+                               + (f", PIN {pincode}" if pincode else "") + f"). Cart: {cart}"))
+    db.commit()
+    await alert_seller(db, business, conversation, question)
+
 class CheckoutItem(BaseModel):
     product_id: int
     variant_id: int | None = None
@@ -208,6 +251,7 @@ class CheckoutIn(BaseModel):
     items: list[CheckoutItem]
     name: str
     address: str
+    pincode: str | None = None
     phone: str | None = None
     c: str | None = None  # signed customer token from the WhatsApp link
     note: str | None = None
@@ -256,6 +300,7 @@ async def checkout(business_id: int, payload: CheckoutIn, db: Session = Depends(
         customer = models.Customer(business_id=business.id, name=name, phone=phone)
         db.add(customer)
     customer.name, customer.address = name, address
+    customer.pincode = zones.clean_pincode(payload.pincode) or zones.pincode_in(address) or customer.pincode
     conversation = db.query(models.Conversation).filter(
         models.Conversation.business_id == business.id, models.Conversation.phone == phone).first()
     if not conversation:
@@ -270,8 +315,16 @@ async def checkout(business_id: int, payload: CheckoutIn, db: Session = Depends(
     method = "cod" if payload.payment_method == "cod" else "online"
     items = [schemas.OrderItemCreate(product_id=i.product_id, variant_id=i.variant_id, quantity=i.quantity)
              for i in payload.items if i.quantity > 0]
+    terms = zones.terms_for(db, business, customer.pincode, address)
+    if terms.status == "no_delivery":
+        db.commit()
+        raise HTTPException(status_code=400, detail=t(code, "no_delivery_area") + (f" {terms.note}" if terms.note else ""))
+    if terms.status == "unknown":
+        # Not in any zone the seller set up: ask the owner instead of guessing the charge.
+        await _ask_owner_about_area(db, business, conversation, name, address, customer.pincode, payload.items)
+        raise HTTPException(status_code=409, detail=t(code, "area_check"))
     try:
-        order = place_order(db, business, customer, items, method, payload.note, check_stock=True)
+        order = place_order(db, business, customer, items, method, payload.note, check_stock=True, terms=terms)
     except HTTPException:
         db.rollback()
         raise
@@ -514,6 +567,7 @@ table.nut td{border-bottom-color:var(--line)}
 .about{border:1px solid var(--line);box-shadow:none}
 .notice{border-radius:14px}
 .hint{background:var(--hdr);color:var(--ink);border:1px solid #f3e1c8}
+.hint.ok{background:#eaf6f7;border-color:#9cd0d4}
 :focus-visible{outline-color:var(--teal-d)}
 </style></head>
 <body>
@@ -699,36 +753,79 @@ function openProduct(pid) {
   draw();
 }
 
+// Delivery terms for the customer's address (shops with delivery zones): fee, COD, minimum, date.
+let Q = null, quoteFor = "";
+const draft = {};
+const rulesNow = () => Q && Q.status === "ok"
+  ? { rate: Q.rate, free_above: Q.free_above, min_order: Q.min_order, cod: R.cod && Q.cod, eta: Q.eta, note: Q.note }
+  : { rate: R.delivery_fee, free_above: R.free_above, min_order: R.min_order, cod: R.cod && !R.zones, eta: null, note: null };
+const feeFor = (s, r) => (!r.rate || (r.free_above && s >= r.free_above)) ? 0 : r.rate;
+
+function drawTotals() {
+  const box = $("#tot");
+  if (!box) return;
+  const r = rulesNow(), s = subtotal(), fee = feeFor(s, r), short = r.min_order && s < r.min_order;
+  const blocked = R.zones && Q && Q.status !== "ok";
+  box.innerHTML = `<div class="totals"><div><span>${esc(T.subtotal)}</span><b>${money(s)}</b></div>
+   <div><span>${esc(T.delivery)}</span><b>${fee ? money(fee) : esc(T.free)}</b></div>
+   <div class="grand"><span>${esc(T.total)}</span><span>${money(s + fee)}</span></div></div>
+   ${short ? `<div class="hint">🧺 ${esc(T.min_order.replace("{amount}", r.min_order))}</div>` : ""}
+   ${r.free_above && fee ? `<div class="hint">🚚 ${esc(T.free_above.replace("{amount}", r.free_above))}</div>` : ""}
+   ${r.eta ? `<div class="hint ok">📦 ${esc(T.expected_delivery.replace("{when}", r.eta))}${r.note ? " · " + esc(r.note) : ""}</div>` : ""}
+   ${blocked ? `<div class="hint">📍 ${esc(Q.status === "no_delivery" ? T.no_delivery_area + (Q.note ? " " + Q.note : "") : T.area_check)}</div>` : ""}`;
+  const pm = $("#pmBox");
+  if (pm) {
+    const chosen = (pm.querySelector("input:checked") || {}).value;
+    pm.innerHTML = `<label><input type="radio" name="pm" value="online" ${chosen !== "cod" || !r.cod ? "checked" : ""}> 💳 ${esc(T.pay_online)}</label>
+    ${r.cod ? `<label><input type="radio" name="pm" value="cod" ${chosen === "cod" ? "checked" : ""}> 💵 ${esc(T.cod)}</label>` : ""}`;
+  }
+  const btn = $("#placeBtn");
+  if (btn) { btn.disabled = Boolean(short) || (blocked && Q.status === "no_delivery"); btn.textContent = `✅ ${T.place_order} · ${money(s + fee)}`; }
+}
+
+async function getQuote() {
+  if (!R.zones) return;
+  const pin = ($("#f-pin") || {}).value || "", addr = ($("#f-addr") || {}).value || "";
+  const key = pin.replace(/\D/g, "") + "|" + addr.trim().toLowerCase();
+  if (key === quoteFor || (pin.replace(/\D/g, "").length < 6 && addr.trim().length < 8)) return;
+  quoteFor = key;
+  try {
+    const res = await fetch(`/shop/${D.shop.id}/quote`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pincode: pin, address: addr, subtotal: subtotal() }) });
+    if (res.ok && quoteFor === key) { Q = await res.json(); drawTotals(); }
+  } catch (x) { /* offline - the checkout itself will check again */ }
+}
+
 function openCart() {
   if (!cart.length) return;
   track("checkout_open");
-  const s = subtotal(), fee = deliveryFee(s), short = R.min_order && s < R.min_order;
   const lines = cart.map((i) => { const p = byId[i.product_id], v = variantOf(p, i.variant_id);
     return `<div class="line">${p.images.length ? `<img src="${esc(p.images[0])}" alt="">` : `<div class="ph" style="--c:${prodColor(p)}">${esc(p.name[0])}</div>`}
      <div class="info"><b>${esc(p.name)}${v && p.variants.length > 1 ? " · " + esc(v.label) : ""}</b><span>${money(unitPrice(i))} × ${i.quantity} = ${money(unitPrice(i) * i.quantity)}</span></div>
      <div class="qty"><button data-l="${i.product_id}:${i.variant_id}" data-d="-1" aria-label="−">−</button><span>${i.quantity}</span><button data-l="${i.product_id}:${i.variant_id}" data-d="1" aria-label="+">+</button></div></div>`; }).join("");
-  const c = D.customer;
+  const c = D.customer, v = (k, fallback) => esc(draft[k] ?? fallback ?? "");
   openSheet(`<div class="pad">${lines}
-   <div class="totals"><div><span>${esc(T.subtotal)}</span><b>${money(s)}</b></div>
-   <div><span>${esc(T.delivery)}</span><b>${fee ? money(fee) : esc(T.free)}</b></div>
-   <div class="grand"><span>${esc(T.total)}</span><span>${money(s + fee)}</span></div></div>
-   ${short ? `<div class="hint">🧺 ${esc(T.min_order.replace("{amount}", R.min_order))}</div>` : ""}
-   ${R.free_above && fee ? `<div class="hint">🚚 ${esc(T.free_above.replace("{amount}", R.free_above))}</div>` : ""}
+   <div id="tot"></div>
    <form id="co" novalidate>
-    <label for="f-name">${esc(T.name)}</label><input id="f-name" name="name" autocomplete="name" required value="${esc(c.name)}">
-    ${D.token ? "" : `<label for="f-phone">${esc(T.phone)}</label><input id="f-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" required placeholder="+91 98765 43210">`}
-    <label for="f-addr">${esc(T.address)}</label><textarea id="f-addr" name="address" rows="3" autocomplete="street-address" required>${esc(c.address)}</textarea>
-    <label for="f-note">${esc(T.note)}</label><input id="f-note" name="note">
-    <div class="pay" role="radiogroup"><label><input type="radio" name="pm" value="online" checked> 💳 ${esc(T.pay_online)}</label>
-    ${R.cod ? `<label><input type="radio" name="pm" value="cod"> 💵 ${esc(T.cod)}</label>` : ""}</div>
+    <label for="f-name">${esc(T.name)}</label><input id="f-name" name="name" autocomplete="name" required value="${v("name", c.name)}">
+    ${D.token ? "" : `<label for="f-phone">${esc(T.phone)}</label><input id="f-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" required placeholder="+91 98765 43210" value="${v("phone")}">`}
+    <label for="f-addr">${esc(T.address)}</label><textarea id="f-addr" name="address" rows="3" autocomplete="street-address" required>${v("address", c.address)}</textarea>
+    ${R.zones ? `<label for="f-pin">${esc(T.pincode)}</label><input id="f-pin" name="pincode" inputmode="numeric" autocomplete="postal-code" maxlength="10" required value="${v("pincode", c.pincode)}">` : ""}
+    <label for="f-note">${esc(T.note)}</label><input id="f-note" name="note" value="${v("note")}">
+    <div class="pay" role="radiogroup" id="pmBox"></div>
     <p class="err" id="err" role="alert"></p>
-    <button class="big" id="placeBtn" type="submit" ${short ? "disabled" : ""}>✅ ${esc(T.place_order)} · ${money(s + fee)}</button>
+    <button class="big" id="placeBtn" type="submit"></button>
    </form></div>`, "🛒 " + T.cart);
+  drawTotals();
+  getQuote();
+  const form = $("#co");
+  form.oninput = (e) => { draft[e.target.name] = e.target.value; if (e.target.name === "pincode") getQuote(); };
+  form.address.onblur = getQuote;
   $("#panel").querySelectorAll("[data-l]").forEach((b) => b.onclick = () => {
-    const [pid, vid] = b.dataset.l.split(":"); const v = vid === "null" ? null : +vid;
-    setQty(+pid, v, qtyIn(+pid, v) + +b.dataset.d); cart.length ? openCart() : closeSheet();
+    const [pid, vid] = b.dataset.l.split(":"); const vv = vid === "null" ? null : +vid;
+    setQty(+pid, vv, qtyIn(+pid, vv) + +b.dataset.d); cart.length ? openCart() : closeSheet();
   });
-  $("#co").onsubmit = submit;
+  form.onsubmit = submit;
 }
 
 async function submit(e) {
@@ -736,15 +833,18 @@ async function submit(e) {
   const f = e.target.elements, btn = $("#placeBtn"), err = $("#err");
   err.textContent = "";
   const body = { items: cart, name: f.name.value.trim(), address: f.address.value.trim(), note: f.note.value.trim(),
-    phone: f.phone ? f.phone.value : null, c: D.token, payment_method: f.pm.value, lang: D.lang };
+    pincode: f.pincode ? f.pincode.value.trim() : null,
+    phone: f.phone ? f.phone.value : null, c: D.token, payment_method: (f.pm && f.pm.value) || "online", lang: D.lang };
   if (!body.name) { err.textContent = T.name; f.name.focus(); return; }
   if (f.phone && f.phone.value.replace(/\D/g, "").length < 10) { err.textContent = T.phone; f.phone.focus(); return; }
   if (body.address.length < 8) { err.textContent = T.address; f.address.focus(); return; }
+  if (f.pincode && body.pincode.replace(/\D/g, "").length < 3) { err.textContent = T.pincode_needed; f.pincode.focus(); return; }
   btn.disabled = true; btn.textContent = "⏳ …";
   try {
     const res = await fetch(`/shop/${D.shop.id}/checkout`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const out = await res.json();
     if (!res.ok) throw new Error(typeof out.detail === "string" ? out.detail : T.error);
+    Object.keys(draft).forEach((k) => delete draft[k]);
     cart = []; save(); renderGrid(); renderBar();
     if (out.redirect) { location.href = out.redirect; return; }
     openSheet(`<div class="done"><div class="big-emoji">🎉</div><h3>${esc(T.order_placed)}</h3><p class="desc">#${out.order_id} · ${esc(out.message)}</p>

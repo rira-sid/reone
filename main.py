@@ -21,7 +21,7 @@ from chatbot import handle_incoming
 from migrate import add_missing_columns
 from reminders import reminder_loop
 from routers import products, orders, payments, conversations, settings, invoices, insights, shop, pay, admin
-from routers import account, founder_ops, issues
+from routers import account, delivery_zones, founder_ops, issues
 from routers.pay import handle_payment_status
 
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
@@ -74,6 +74,7 @@ app.include_router(admin.router)
 app.include_router(founder_ops.router)
 app.include_router(account.router)
 app.include_router(issues.router)
+app.include_router(delivery_zones.router)
 # Payment app logos and the UPI banner WhatsApp loads as a message header image.
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 

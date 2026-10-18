@@ -159,6 +159,7 @@ class Customer(Base):
     name = Column(String, nullable=False)
     phone = Column(String, nullable=False)
     address = Column(Text, default="")
+    pincode = Column(String, nullable=True)
 
     orders = relationship("Order", back_populates="customer")
 
@@ -183,6 +184,8 @@ class Order(Base):
     paid_at = Column(DateTime(timezone=True), nullable=True)
     tracking_info = Column(Text, nullable=True)
     # Expected delivery window, fixed when the order is confirmed (paid, or COD placed).
+    delivery_zone_id = Column(Integer, nullable=True)
+    pincode = Column(String, nullable=True)
     expected_from = Column(Date, nullable=True)
     expected_to = Column(Date, nullable=True)
     delivery_fee = Column(Float, default=0.0, nullable=False)
@@ -458,6 +461,28 @@ class ProductTranslation(Base):
 
 
 INCIDENT_STATUSES = ["open", "in_progress", "resolved"]
+
+
+class DeliveryZone(Base):
+    """Where the shop delivers and on what terms. A zone matches by PIN code prefix, city or state;
+    one "rest" zone covers everywhere else. Blank terms fall back to the shop's general order rules."""
+    __tablename__ = "delivery_zones"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    match_type = Column(String, nullable=False, default="pincode")  # pincode | city | state | rest
+    match_values = Column(Text, nullable=True)  # comma separated: "641, 642" / "Coimbatore, Tiruppur"
+    delivers = Column(Boolean, default=True, nullable=False)  # False = "we don't deliver here"
+    days_min = Column(Integer, nullable=True)
+    days_max = Column(Integer, nullable=True)
+    fee = Column(Float, nullable=True)
+    free_above = Column(Float, nullable=True)
+    min_order = Column(Float, nullable=True)
+    cod = Column(Boolean, nullable=True)  # None = same as the shop's setting
+    note = Column(Text, nullable=True)  # e.g. "Same-day if ordered before 2 pm"
+    position = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class Incident(Base):

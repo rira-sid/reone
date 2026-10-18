@@ -38,5 +38,10 @@
  "error": "Something went wrong. Please try again.",
  "no_products": "No products yet - please check back soon.",
  "close": "Close",
- "voice_unclear": "Sorry, I couldn't hear that voice note clearly. Could you send it again, or type your message?"
+ "voice_unclear": "Sorry, I couldn't hear that voice note clearly. Could you send it again, or type your message?",
+ "pincode": "PIN code",
+ "pincode_needed": "Please enter your PIN code",
+ "no_delivery_area": "Sorry, we don't deliver to this area yet.",
+ "area_check": "We need to check delivery to your area. The shop has been told and will message you on WhatsApp shortly.",
+ "expected_delivery": "Expected delivery: {when}"
 }

@@ -11,6 +11,7 @@ import schemas
 from auth import current_business
 from database import get_db
 from models import ORDER_STATUSES
+import zones
 from delivery import expected_line, set_expected
 from notifications import notify_order_update
 from routers.invoices import invoice_path
@@ -62,14 +63,6 @@ def list_orders(db: Session = Depends(get_db), business: models.Business = Depen
     return [_serialize_order(o) for o in orders]
 
 
-def delivery_fee_for(business: models.Business, subtotal: float) -> float:
-    if not business.delivery_fee:
-        return 0.0
-    if business.free_delivery_above and subtotal >= business.free_delivery_above:
-        return 0.0
-    return business.delivery_fee
-
-
 def _stock_holders(db: Session, item: models.OrderItem) -> list:
     """Sizes keep their own stock; the product's stock is the total over its sizes."""
     holders = [db.get(models.Product, item.product_id)]
@@ -105,7 +98,7 @@ def mark_order_paid(db: Session, order: models.Order, payment_id: str | None = N
         order.status = "Confirmed"
     if payment_id:
         order.razorpay_payment_id = payment_id
-    set_expected(order.business, order)
+    set_expected(db, order.business, order)
     reserve_stock(db, order)
 
 
@@ -117,17 +110,21 @@ def place_order(
     payment_method: str = "online",
     customer_note: str | None = None,
     check_stock: bool = False,
+    terms: zones.Terms | None = None,
 ) -> models.Order:
     """Create an order (and its line items) for an already-added customer. Caller commits.
+    `terms` = the delivery zone's rules for the customer's address (default: the shop's general rules).
     Raises HTTPException(400) if the order breaks the shop's rules."""
+    terms = terms or zones.general_terms(business)
     if payment_method not in ("online", "cod"):
         raise HTTPException(status_code=400, detail="Payment method must be online or cod")
-    if payment_method == "cod" and not business.cod_enabled:
+    if payment_method == "cod" and not terms.cod:
         raise HTTPException(status_code=400, detail="Cash on delivery is not available")
 
     order = models.Order(
         business_id=business.id, customer_id=customer.id, status="Pending",
         payment_method=payment_method, customer_note=(customer_note or "").strip() or None,
+        delivery_zone_id=terms.zone.id if terms.zone else None, pincode=customer.pincode,
     )
     db.add(order)
     db.flush()
@@ -164,10 +161,10 @@ def place_order(
             variant_label=variant.label if variant else None,
         ))
 
-    if business.min_order_amount and subtotal < business.min_order_amount:
-        raise HTTPException(status_code=400, detail=f"Minimum order is ₹{business.min_order_amount:g}")
+    if terms.min_order and subtotal < terms.min_order:
+        raise HTTPException(status_code=400, detail=f"Minimum order is ₹{terms.min_order:g}")
 
-    order.delivery_fee = delivery_fee_for(business, subtotal)
+    order.delivery_fee = terms.fee_for(subtotal)
     # A discount the shop gave this customer earlier (e.g. to make up for an issue) is used automatically.
     credit = db.query(models.CustomerCredit).filter(
         models.CustomerCredit.business_id == business.id, models.CustomerCredit.phone == customer.phone,
@@ -178,7 +175,7 @@ def place_order(
     order.total_amount = subtotal + order.delivery_fee - (order.discount_amount or 0)
     if payment_method == "cod":
         order.status = "Confirmed"  # nothing to wait for - reserve the stock now
-        set_expected(business, order)
+        set_expected(db, business, order)
         db.flush()
         reserve_stock(db, order)
     return order
@@ -190,7 +187,12 @@ def create_order(payload: schemas.OrderCreate, db: Session = Depends(get_db), bu
     db.add(customer)
     db.flush()
 
-    order = place_order(db, business, customer, payload.items, payload.payment_method, payload.customer_note)
+    # The seller typed this order in, so an address outside every zone just gets the general rules.
+    terms = zones.terms_for(db, business, customer.pincode, customer.address)
+    if terms.status != "ok":
+        terms = zones.general_terms(business)
+    order = place_order(db, business, customer, payload.items, payload.payment_method, payload.customer_note,
+                        terms=terms)
     db.commit()
     db.refresh(order)
     return _serialize_order(order)

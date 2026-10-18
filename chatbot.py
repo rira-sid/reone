@@ -19,6 +19,7 @@ import models
 from auth import sign_value
 from business import whatsapp_creds
 from database import SessionLocal
+import zones
 from delivery import delivery_days
 from languages import FIRST_PAGE, LANGUAGES, available_languages, language_name, t
 from routers.invoices import PUBLIC_BASE_URL
@@ -93,7 +94,7 @@ def _get_or_create_conversation(db, business_id: int, phone: str, profile_name: 
     return conversation
 
 
-def shop_policies(business: models.Business) -> str:
+def shop_policies(business: models.Business, db=None) -> str:
     lines = []
     if not business.accepting_orders:
         lines.append("NOT accepting orders right now. Shop's message: "
@@ -112,6 +113,10 @@ def shop_policies(business: models.Business) -> str:
     if business.min_order_amount:
         lines.append(f"Minimum order value: ₹{business.min_order_amount:g} (before delivery fee)")
     lines.append("Cash on delivery: " + ("available" if business.cod_enabled else "not available - online payment only"))
+    zone_text = zones.describe(db, business) if db is not None else ""
+    if zone_text:
+        lines.append("The general rules above apply only where a zone leaves something blank.")
+        lines.append(zone_text)
     return "\n".join(lines)
 
 
@@ -234,7 +239,8 @@ def customer_profile(db, conversation: models.Conversation, orders: list[models.
         lines.append(f"Orders: {len(real)} recent; usually buys {usual}")
         address = real[0].customer.address if real[0].customer else ""
         if address:
-            lines.append(f"Delivery address on file: {address[:120]}")
+            pincode = real[0].customer.pincode
+            lines.append(f"Delivery address on file: {address[:120]}" + (f" (PIN {pincode})" if pincode else ""))
     if conversation.language:
         lines.append(f"Language used last time: {conversation.language}")
     issues = db.query(models.Incident).filter(models.Incident.conversation_id == conversation.id).count()
@@ -399,7 +405,7 @@ async def respond(conversation_id: int):
             models.Product.business_id == business.id, models.Product.is_active.is_(True)).all()
         orders = _orders_for(db, business.id, conversation.phone)
         try:
-            turn = await ai.run_turn(business.name, conversation, products, image, orders, shop_policies(business),
+            turn = await ai.run_turn(business.name, conversation, products, image, orders, shop_policies(business, db),
                                      audio=audio, language=language_name(conversation.preferred_language or "en"),
                                      profile=customer_profile(db, conversation, orders),
                                      open_items=open_items(db, conversation, orders),

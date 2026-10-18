@@ -60,6 +60,7 @@ class CustomerBase(BaseModel):
     name: str
     phone: str
     address: str = ""
+    pincode: str | None = None
 
 
 class CustomerOut(CustomerBase):
