@@ -9,6 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import billing
+import incidents
 import models
 from auth import email_taken, hash_password, issue_token
 from founder_auth import current_founder
@@ -19,6 +20,8 @@ from routers.invoices import PUBLIC_BASE_URL
 from routers.pay import effective_payment_method
 from slugs import check_wanted, ensure_slug, shop_path
 from tracking import audit, client_ip
+
+QUESTION_OVERDUE_AFTER = timedelta(minutes=30)  # a customer question the owner hasn't answered
 
 router = APIRouter(prefix="/admin", tags=["founder"], dependencies=[Depends(current_founder)])
 
@@ -45,7 +48,7 @@ def setup_steps(db: Session, business: models.Business) -> dict:
 def _row(db: Session, business: models.Business, now: datetime) -> dict:
     since = now - timedelta(days=30)
     orders = db.query(models.Order).filter(
-        models.Order.business_id == business.id, models.Order.status != "Cancelled").all()
+        models.Order.is_test.is_(False), models.Order.business_id == business.id, models.Order.status != "Cancelled").all()
     recent = [o for o in orders if o.created_at and _utc(o.created_at) >= since]
     last_order = max((_utc(o.created_at) for o in orders if o.created_at), default=None)
     last_chat = db.query(func.max(models.Conversation.last_customer_message_at)).filter(
@@ -95,6 +98,14 @@ def _row(db: Session, business: models.Business, now: datetime) -> dict:
             models.Customer.business_id == business.id).distinct().count(),
         "needs_you": db.query(models.Conversation).filter(
             models.Conversation.business_id == business.id, models.Conversation.needs_seller.is_(True)).count(),
+        "questions_overdue": db.query(models.Conversation).filter(
+            models.Conversation.business_id == business.id, models.Conversation.needs_seller.is_(True),
+            models.Conversation.needs_seller_since <= now - QUESTION_OVERDUE_AFTER).count(),
+        "issues_open": db.query(models.Incident).filter(
+            models.Incident.business_id == business.id, models.Incident.status != "resolved").count(),
+        "issues_overdue": db.query(models.Incident).filter(
+            models.Incident.business_id == business.id, models.Incident.status != "resolved",
+            models.Incident.created_at <= now - incidents.FOUNDER_OVERDUE_AFTER).count(),
         "funnel_30d": funnel(db, business.id),
         "last_activity_at": last_activity,
         "active_7d": bool(last_activity and now - last_activity < timedelta(days=7)),
@@ -120,8 +131,21 @@ def overview(db: Session = Depends(get_db)):
         "overdue": sum(1 for r in rows if r["billing"]["state"] in ("overdue", "paused")),
         "trials": sum(1 for r in rows if r["billing"]["plan"] == "trial"),
         "paying": sum(1 for r in rows if r["billing"]["plan"] in billing.PAID_PLANS and r["billing"]["state"] in ("active", "due_soon")),
+        "issues_overdue": sum(r["issues_overdue"] for r in rows),
+        "questions_overdue": sum(r["questions_overdue"] for r in rows),
     }
-    return {"totals": totals, "businesses": rows}
+    return {"totals": totals, "businesses": rows, "overdue_issues": overdue_issues(db, businesses, now)}
+
+
+def overdue_issues(db: Session, businesses: list[models.Business], now: datetime) -> list[dict]:
+    """Customer issues still not resolved after an hour, oldest first - the founder should chase these."""
+    names = {b.id: b.name for b in businesses}
+    rows = db.query(models.Incident).filter(
+        models.Incident.status != "resolved",
+        models.Incident.created_at <= now - incidents.FOUNDER_OVERDUE_AFTER,
+    ).order_by(models.Incident.created_at).limit(50).all()
+    return [{**incidents.incident_dict(i), "business_id": i.business_id, "business_name": names.get(i.business_id)}
+            for i in rows]
 
 
 class NewBusiness(BaseModel):

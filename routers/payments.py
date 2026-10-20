@@ -7,6 +7,7 @@ import schemas
 from auth import current_business
 from business import DEFAULT_BUSINESS_ID, razorpay_creds, whatsapp_creds
 from database import get_db
+from delivery import expected_line
 from routers.invoices import invoice_url
 from routers.orders import mark_order_paid
 from whatsapp import WhatsAppSendError, send_message
@@ -151,8 +152,10 @@ async def notify_payment_received(business: models.Business, order: models.Order
         conversation = db.query(models.Conversation).filter(
             models.Conversation.business_id == business.id, models.Conversation.phone == order.customer.phone
         ).first()
+        eta = expected_line(order)
         text = (f"✅ Payment received for Order #{order.id} (₹{order.total_amount:g}). Thank you! "
-                f"We'll let you know when it ships.\n🧾 Invoice: {invoice_url(order.id)}")
+                f"We'll let you know when it ships.\n" + (f"{eta}\n" if eta else "")
+                + f"🧾 Invoice: {invoice_url(order.id)}")
         if within_service_window(conversation):
             try:
                 await send_message(whatsapp_creds(business), order.customer.phone, text)
@@ -163,7 +166,8 @@ async def notify_payment_received(business: models.Business, order: models.Order
                 print("PAYMENT CONFIRMATION NOT DELIVERED:", e)
         else:
             await notify_order_update(db, business, order,
-                                      f"Payment received, thank you! Invoice: {invoice_url(order.id)}")
+                                      f"Payment received, thank you! {eta + '. ' if eta else ''}"
+                                      f"Invoice: {invoice_url(order.id)}")
         items = ", ".join(f"{i.quantity} × {i.display_name}" for i in order.items)
         await notify_seller(db, business, f"💰 Order #{order.id} PAID ₹{order.total_amount:g} - {order.customer.name}: "
                                           f"{items}. Ready to pack 📦")

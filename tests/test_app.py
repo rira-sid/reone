@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import itertools
@@ -69,9 +70,18 @@ def pick(code):
 
 
 def start_chat(client, pnid, phone, lang="en"):
-    """First message gets the language menu; picking a language gets the welcome + Shop button."""
-    whatsapp_message(client, pnid, phone, text("hi"))
-    whatsapp_message(client, pnid, phone, pick(lang))
+    """A customer who has chatted before in `lang` (there's no language menu any more)."""
+    with SessionLocal() as db:
+        business = db.query(models.Business).filter(models.Business.wa_phone_number_id == pnid).first()
+        c = db.query(models.Conversation).filter(models.Conversation.business_id == business.id,
+                                                 models.Conversation.phone == phone).first()
+        if not c:
+            c = models.Conversation(business_id=business.id, phone=phone)
+            db.add(c)
+        c.preferred_language = lang
+        c.last_processed_message_id = 0
+        c.last_customer_message_at = datetime.now(timezone.utc)  # inside WhatsApp's 24h window
+        db.commit()
 
 
 def shop_checkout(client, business_id, phone, items, **extra):
@@ -153,27 +163,25 @@ def test_whatsapp_number_cannot_be_claimed_twice(client):
 
 # ---- WhatsApp chat flow --------------------------------------------------------------------
 
-def test_language_menu_then_welcome_with_shop_button(client, fake_ai, fake_whatsapp):
+def test_hi_gets_a_human_greeting_without_menu_or_link(client, fake_ai, fake_whatsapp):
     business_id, h = new_seller(client, name="Anu Bakes", wa_phone_number_id="PN_ANU", wa_token="t",
                                 welcome_message="Fresh every morning!")
+    fake_ai.queue = [fake_ai.turn(intent="greeting", reply="Hi! Welcome to Anu Bakes 😊 How can I help you today?",
+                                  language_code="en")]
     whatsapp_message(client, "PN_ANU", "919000000101", text("hello"))
-    menu = fake_whatsapp.payloads[-1]["interactive"]
-    assert fake_whatsapp.sent[-1][:3] == ("PN_ANU", "919000000101", "interactive") and menu["type"] == "list"
-    rows = menu["action"]["sections"][0]["rows"]
-    assert len(rows) == 10 and rows[0]["id"] == "lang:en" and rows[-1]["id"] == "lang:more"
-    assert fake_ai.calls == []  # no AI before a language is chosen
-
-    whatsapp_message(client, "PN_ANU", "919000000101", pick("more"))
-    more = [r["id"] for r in fake_whatsapp.payloads[-1]["interactive"]["action"]["sections"][0]["rows"]]
-    assert "lang:or" in more and "lang:es" in more and "lang:zh" in more and len(more) <= 10
-
-    whatsapp_message(client, "PN_ANU", "919000000101", pick("ta"))
-    welcome = fake_whatsapp.payloads[-1]["interactive"]
-    assert welcome["type"] == "cta_url" and "Anu Bakes" in welcome["body"]["text"]
-    assert "Fresh every morning!" in welcome["body"]["text"]
-    assert welcome["action"]["parameters"]["display_text"] == "இப்போதே வாங்க"
-    url = welcome["action"]["parameters"]["url"]
+    assert fake_whatsapp.sent[-1][1:] == ("919000000101", "text", "Hi! Welcome to Anu Bakes 😊 How can I help you today?")
+    assert not [p for p in fake_whatsapp.payloads if p.get("type") == "interactive"]  # no language menu, no link
+    call = fake_ai.calls[-1]
+    assert call["welcome_note"] == "Fresh every morning!" and "[NEW]" in call["transcript"]
+    # A customer who asks to order gets the link, in the language they're writing in.
+    fake_ai.queue = [fake_ai.turn(intent="shop", reply="இதோ எங்கள் கடை 😊", language_code="ta")]
+    whatsapp_message(client, "PN_ANU", "919000000101", text("order pannanum"))
+    url = fake_whatsapp.payloads[-1]["interactive"]["action"]["parameters"]["url"]
     assert "/shop/anu-bakes" in url and "?c=919000000101." in url and "lang=ta" in url
+    # A price question is answered without a link.
+    fake_ai.queue = [fake_ai.turn(intent="shop", reply="Cupcakes are ₹40 each 😊", share_link=False)]
+    whatsapp_message(client, "PN_ANU", "919000000101", text("cupcake price?"))
+    assert fake_whatsapp.sent[-1][2:] == ("text", "Cupcakes are ₹40 each 😊")
 
 
 def test_wants_to_buy_gets_shop_link_with_cart(client, fake_ai, fake_whatsapp):
@@ -226,28 +234,45 @@ def test_photo_and_voice_note_understood_reply_is_text(client, fake_ai, fake_wha
 def test_order_status_answered_automatically(client, fake_ai, fake_whatsapp):
     _, h = new_seller(client, wa_phone_number_id="PN_STATUS", wa_token="t")
     product = add_product(client, h)
-    whatsapp_message(client, "PN_STATUS", "919000000107", text("hi"))
-    whatsapp_message(client, "PN_STATUS", "919000000107", pick("en"))
-    fake_ai.queue = [fake_ai.turn(intent="order_status", reply="You have no orders")]
+    start_chat(client, "PN_STATUS", "919000000107")
+    fake_ai.queue = [fake_ai.turn(intent="order_status", reply="I can't find an order yet - can I help you place one?")]
     whatsapp_message(client, "PN_STATUS", "919000000107", text("where is my order"))
-    assert fake_whatsapp.payloads[-1]["interactive"]["type"] == "cta_url"  # no orders yet -> shop button
+    assert fake_whatsapp.sent[-1][2:] == ("text", "I can't find an order yet - can I help you place one?")
 
     order_id = place_whatsapp_order(client, fake_ai, "PN_STATUS", "919000000107", product["id"])
-    fake_ai.queue = [fake_ai.turn(intent="order_status", reply=f"Order #{order_id} is being packed")]
-    whatsapp_message(client, "PN_STATUS", "919000000107", text("where is my order"))
+    with SessionLocal() as db:
+        db.get(models.Order, order_id).payment_link_url = "https://rzp.io/pay-me"
+        db.commit()
+    fake_ai.queue = [fake_ai.turn(intent="order_status", reply=f"Order #{order_id} is waiting for payment",
+                                  payment_order_id=order_id)]
+    whatsapp_message(client, "PN_STATUS", "919000000107", text("send payment link"))
     assert fake_ai.calls[-1]["orders"] == [order_id]
-    assert fake_whatsapp.sent[-1][2:] == ("text", f"Order #{order_id} is being packed")
+    assert f"waiting for payment (₹" in fake_ai.calls[-1]["open_items"]
+    assert fake_whatsapp.sent[-1][3] == f"Order #{order_id} is waiting for payment\n\n💳 https://rzp.io/pay-me"
 
 
-def test_greeting_and_language_change(client, fake_ai, fake_whatsapp):
+def test_greeting_and_split_messages(client, fake_ai, fake_whatsapp):
     new_seller(client, wa_phone_number_id="PN_HELLO", wa_token="t")
     start_chat(client, "PN_HELLO", "919000000108")
     fake_ai.queue = [fake_ai.turn(intent="greeting", reply="You're welcome! 😊")]
     whatsapp_message(client, "PN_HELLO", "919000000108", text("thanks"))
     assert fake_whatsapp.sent[-1][3] == "You're welcome! 😊"
-    fake_ai.queue = [fake_ai.turn(intent="change_language")]
-    whatsapp_message(client, "PN_HELLO", "919000000108", text("change language"))
-    assert fake_whatsapp.payloads[-1]["interactive"]["type"] == "list"
+    # Several messages sent before the bot answers are read together and answered once.
+    import chatbot
+
+    with SessionLocal() as db:
+        convo = db.query(models.Conversation).filter_by(phone="919000000108").first()
+        for line in ("Hi", "I need masala", "chicken masala 250g"):
+            db.add(models.Message(conversation_id=convo.id, sender="customer", text=line))
+        db.commit()
+        convo_id = convo.id
+    sent = len(fake_whatsapp.sent)
+    fake_ai.queue = [fake_ai.turn(intent="shop", reply="Chicken Masala 250g is ₹230 😊", share_link=False)]
+    asyncio.run(chatbot.respond(convo_id))
+    assert len(fake_whatsapp.sent) == sent + 1 and len(fake_ai.calls[-1]["transcript"].split("[NEW]")) == 4
+    asyncio.run(chatbot.respond(convo_id))  # nothing new -> no second reply
+    assert len(fake_whatsapp.sent) == sent + 1
+    assert chatbot.looks_unfinished("I need") and not chatbot.looks_unfinished("chicken masala 250g")
 
 
 SELLER = "919800000001"
@@ -264,43 +289,45 @@ def open_seller_window(business_id):
 def test_question_goes_to_seller_who_replies_from_whatsapp(client, fake_ai, fake_whatsapp):
     business_id, h = new_seller(client, wa_phone_number_id="PN_ASK", wa_token="t", alert_phone="98000 00001")
     start_chat(client, "PN_ASK", "919000000109")
-    whatsapp_message(client, "PN_ASK", "919000000109", text("is it spicy?"))  # fake AI: intent question
+    fake_ai.queue = [fake_ai.turn(intent="question", reply="Good question! Let me check that for you 😊")]
+    whatsapp_message(client, "PN_ASK", "919000000109", text("is it spicy?"))
     to_seller = [s for s in fake_whatsapp.sent if s[1] == SELLER]
     assert to_seller[-1][2:] == ("template", "seller_alert")  # seller hasn't written in 24h
-    assert "passed your question to the seller" in fake_whatsapp.sent[-1][3]
+    assert fake_whatsapp.sent[-1][3] == "Good question! Let me check that for you 😊"  # AI's natural holding line
     convo = client.get("/conversations", headers=h).json()[0]
-    assert convo["needs_seller"]
+    assert convo["needs_seller"] and not convo["overdue"]
 
     open_seller_window(business_id)
     sent = len(fake_whatsapp.sent)
     whatsapp_message(client, "PN_ASK", "919000000109", text("and is it vegan?"))
     new = fake_whatsapp.sent[sent:]
     alert = [s for s in new if s[1] == SELLER][-1]
-    assert alert[2] == "text" and "and is it vegan?" in alert[3]
-    assert not [s for s in new if s[1] == "919000000109"]  # acknowledged once, not on every message
+    assert alert[2] == "text" and "added" in alert[3] and "and is it vegan?" in alert[3]  # same thread
+    assert not [s for s in new if s[1] == "919000000109"]  # no second holding message
     alert_id = f"wamid.out.{fake_whatsapp.sent.index(alert) + 1}"
 
     # Seller swipe-replies to the alert on their own WhatsApp.
     whatsapp_message(client, "PN_ASK", SELLER, {**text("Mild, and yes vegan!"), "context": {"id": alert_id}})
     assert ("PN_ASK", "919000000109", "text", "Mild, and yes vegan!") in fake_whatsapp.sent
     assert fake_whatsapp.sent[-1][2:] == ("reaction", "✅")
-    convo = client.get("/conversations", headers=h).json()
-    convo = [c for c in convo if c["phone"] == "919000000109"][0]
+    convo = [c for c in client.get("/conversations", headers=h).json() if c["phone"] == "919000000109"][0]
     assert not convo["needs_seller"]
     msgs = client.get(f"/conversations/{convo['id']}/messages", headers=h).json()
     assert msgs[-1]["sender"] == "seller" and msgs[-1]["text"] == "Mild, and yes vegan!"
 
-    # Small talk is always the assistant's job - no alert for "thank you".
-    fake_ai.queue = [fake_ai.turn(intent="greeting", reply="You're welcome!")]
+    # For 30 minutes after the owner's reply the chat stays with the owner - the bot stays quiet.
     sent = len(fake_whatsapp.sent)
+    calls = len(fake_ai.calls)
     whatsapp_message(client, "PN_ASK", "919000000109", text("thank you"))
-    assert [s[1:] for s in fake_whatsapp.sent[sent:]] == [("919000000109", "text", "You're welcome!")]
+    assert len(fake_ai.calls) == calls and not [s for s in fake_whatsapp.sent[sent:] if s[1] == "919000000109"]
+    assert [s for s in fake_whatsapp.sent[sent:] if s[1] == SELLER]
 
 
 def test_seller_message_without_swipe_is_treated_as_customer(client, fake_ai, fake_whatsapp):
     new_seller(client, wa_phone_number_id="PN_SELFTEST", wa_token="t", alert_phone=SELLER)
+    fake_ai.queue = [fake_ai.turn(intent="greeting", reply="Hi! How can I help you today?")]
     whatsapp_message(client, "PN_SELFTEST", SELLER, text("hi"))  # seller testing their own shop
-    assert fake_whatsapp.payloads[-1]["interactive"]["type"] == "list"
+    assert fake_whatsapp.sent[-1][1:] == (SELLER, "text", "Hi! How can I help you today?")
 
 
 def test_seller_hands_chat_back_with_bot_command(client, fake_ai, fake_whatsapp):
@@ -366,7 +393,6 @@ def test_closed_shop_says_so_in_chat(client, fake_ai, fake_whatsapp):
     new_seller(client, wa_phone_number_id="PN_SHUT", wa_token="t", accepting_orders=False,
                closed_message="On holiday till Monday!")
     start_chat(client, "PN_SHUT", "919000000114")
-    assert "On holiday till Monday!" in fake_whatsapp.sent[-1][3]
     fake_ai.queue = [fake_ai.turn(intent="shop")]
     whatsapp_message(client, "PN_SHUT", "919000000114", text("i want to order"))
     assert fake_whatsapp.sent[-1][3] == "On holiday till Monday!"
@@ -389,10 +415,10 @@ def test_catalog_builder_sizes_photos_nutrition(client):
 
     import base64
     jpeg = "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8\xff fake jpeg").decode()
-    for _ in range(4):
+    for _ in range(8):
         p = client.post(f"/products/{p['id']}/images", json={"data": jpeg}, headers=h).json()
-    assert len(p["images"]) == 4
-    assert client.post(f"/products/{p['id']}/images", json={"data": jpeg}, headers=h).status_code == 400  # max 4
+    assert len(p["images"]) == 8
+    assert client.post(f"/products/{p['id']}/images", json={"data": jpeg}, headers=h).status_code == 400  # max 8
     assert client.post(f"/products/{p['id']}/images", json={"data": "data:text/html;base64,PGI+"},
                        headers=h).status_code == 400
     last = p["images"][-1]["id"]
@@ -401,7 +427,7 @@ def test_catalog_builder_sizes_photos_nutrition(client):
     img = client.get(p["images"][0]["url"].split(".com", 1)[-1])
     assert img.status_code == 200 and img.headers["content-type"] == "image/jpeg" and img.content.startswith(b"\xff\xd8")
     p = client.delete(f"/products/{p['id']}/images/{last}", headers=h).json()
-    assert len(p["images"]) == 3
+    assert len(p["images"]) == 7
 
     # Edit sizes: rename one, drop one, add one.
     v100 = p["variants"][0]

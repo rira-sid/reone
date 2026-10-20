@@ -32,6 +32,7 @@ async def send_due_reminders(now: datetime | None = None) -> int:
             .options(joinedload(models.Order.customer), joinedload(models.Order.business))
             .filter(
                 models.Order.is_paid.is_(False),
+                models.Order.is_test.is_(False),  # no reminders for the seller's own ₹1 test
                 models.Order.payment_link_url.isnot(None),
                 models.Order.payment_reminder_sent_at.is_(None),
                 models.Order.status != "Cancelled",
@@ -104,6 +105,10 @@ async def reminder_loop():
                 print(f"Cancelled {count} unpaid order(s)")
             with SessionLocal() as db:
                 await escalate_waiting(db)
+            import incidents
+
+            with SessionLocal() as db:
+                await incidents.escalate(db)
             from billing import billing_tick, check_whatsapp_health
 
             with SessionLocal() as db:

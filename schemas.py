@@ -1,10 +1,13 @@
-from datetime import datetime
+from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict
 
 
 class VariantIn(BaseModel):
     id: int | None = None
-    label: str
+    label: str = ""
+    option1: str | None = None
+    option2: str | None = None
+    image_id: int | None = None
     price: float
     stock: int = 0
 
@@ -12,6 +15,9 @@ class VariantIn(BaseModel):
 class VariantOut(BaseModel):
     id: int
     label: str
+    option1: str | None = None
+    option2: str | None = None
+    image_id: int | None = None
     price: float
     stock: int
 
@@ -33,6 +39,7 @@ class ProductBase(BaseModel):
     category: str | None = None
     description: str | None = None
     nutrition: str | None = None
+    option_names: list[str] | None = None
 
 
 class ProductCreate(ProductBase):
@@ -47,6 +54,7 @@ class ProductUpdate(BaseModel):
     category: str | None = None
     description: str | None = None
     nutrition: str | None = None
+    option_names: list[str] | None = None
     variants: list[VariantIn] | None = None
 
 
@@ -60,6 +68,7 @@ class CustomerBase(BaseModel):
     name: str
     phone: str
     address: str = ""
+    pincode: str | None = None
 
 
 class CustomerOut(CustomerBase):
@@ -111,7 +120,10 @@ class OrderOut(BaseModel):
     payment_link_url: str | None = None
     paid_at: datetime | None = None
     tracking_info: str | None = None
+    expected_from: date | None = None
+    expected_to: date | None = None
     delivery_fee: float = 0.0
+    discount_amount: float = 0.0
     payment_method: str = "online"
     customer_note: str | None = None
     invoice_path: str

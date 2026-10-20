@@ -36,7 +36,7 @@ def funnel(db: Session, business_id: int, days: int = 30) -> dict:
         .all()
     )
     paid = db.query(models.Order).filter(
-        models.Order.business_id == business_id, models.Order.created_at >= since, models.Order.is_paid.is_(True)
+        models.Order.is_test.is_(False), models.Order.business_id == business_id, models.Order.created_at >= since, models.Order.is_paid.is_(True)
     ).count()
     return {"views": counts.get("view", 0), "carts": counts.get("add_to_cart", 0),
             "checkouts": counts.get("checkout_open", 0), "orders": counts.get("order", 0), "paid": paid}
@@ -56,7 +56,7 @@ def stats(db: Session = Depends(get_db), business: models.Business = Depends(cur
     orders = (
         db.query(models.Order)
         .options(joinedload(models.Order.items).joinedload(models.OrderItem.product))
-        .filter(models.Order.business_id == business.id, models.Order.status != "Cancelled")
+        .filter(models.Order.is_test.is_(False), models.Order.business_id == business.id, models.Order.status != "Cancelled")
         .all()
     )
     dated = [(o, _ist(o.created_at).date()) for o in orders if o.created_at]
@@ -102,6 +102,8 @@ def stats(db: Session = Depends(get_db), business: models.Business = Depends(cur
         "to_ship": sum(1 for o in orders if o.is_paid and o.status in ("Confirmed", "Packed")),
         "needs_you": needs_you,
         "unread": unread_chats(db, business.id),
+        "open_issues": db.query(models.Incident).filter(
+            models.Incident.business_id == business.id, models.Incident.status != "resolved").count(),
         "low_stock": low_stock,
         "total_orders": len(orders),
         "daily": daily,
@@ -164,7 +166,7 @@ def insights(days: int = 30, db: Session = Depends(get_db), business: models.Bus
     orders = (
         db.query(models.Order)
         .options(joinedload(models.Order.items).joinedload(models.OrderItem.product), joinedload(models.Order.customer))
-        .filter(models.Order.business_id == business.id, models.Order.created_at >= prev_start)
+        .filter(models.Order.is_test.is_(False), models.Order.business_id == business.id, models.Order.created_at >= prev_start)
         .all()
     )
     cur = [o for o in orders if o.created_at and when(o) >= start.astimezone(IST)]
@@ -177,7 +179,7 @@ def insights(days: int = 30, db: Session = Depends(get_db), business: models.Bus
     # Customers: new = first ever order in this period.
     phones = {o.customer.phone for o in live if o.customer}
     earlier = {phone for (phone,) in db.query(models.Customer.phone).join(models.Order).filter(
-        models.Order.business_id == business.id, models.Order.created_at < start, models.Order.status != "Cancelled"
+        models.Order.is_test.is_(False), models.Order.business_id == business.id, models.Order.created_at < start, models.Order.status != "Cancelled"
     ).distinct().all()}
     returning = len(phones & earlier)
 

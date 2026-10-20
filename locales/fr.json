@@ -38,5 +38,11 @@
  "error": "Un problème est survenu. Veuillez réessayer.",
  "no_products": "Pas encore de produits - revenez nous voir bientôt.",
  "close": "Fermer",
- "voice_unclear": "Désolé, je n'ai pas bien entendu votre message vocal. Pouvez-vous le renvoyer ou l'écrire ?"
+ "voice_unclear": "Désolé, je n'ai pas bien entendu votre message vocal. Pouvez-vous le renvoyer ou l'écrire ?",
+ "pincode": "Code PIN",
+ "pincode_needed": "Veuillez entrer votre code PIN",
+ "no_delivery_area": "Désolé, nous ne livrons pas encore dans cette zone.",
+ "area_check": "Nous devons vérifier la livraison dans votre zone. La boutique a été prévenue et vous enverra un message sur WhatsApp sous peu.",
+ "expected_delivery": "Livraison prévue : {when}",
+ "details": "Détails"
 }

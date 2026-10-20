@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
@@ -24,6 +24,8 @@ class ConversationOut(BaseModel):
     ai_paused: bool
     needs_seller: bool
     unread: bool = False  # customer wrote since the seller last opened this chat
+    overdue: bool = False  # a question has waited 30+ minutes for the owner
+    open_issue: str | None = None  # e.g. "INC-12" while an issue is open
     updated_at: datetime | None
     # False once 24h have passed since the customer's last message - WhatsApp then rejects
     # free-form replies until the customer writes again.
@@ -58,6 +60,19 @@ def _get_conversation(db: Session, business: models.Business, conversation_id: i
     return conversation
 
 
+OVERDUE_AFTER = timedelta(minutes=30)
+
+
+def _open_issues(conversation: models.Conversation):
+    from sqlalchemy.orm import object_session
+
+    db = object_session(conversation)
+    if db is None:
+        return []
+    return db.query(models.Incident).filter(models.Incident.conversation_id == conversation.id,
+                                            models.Incident.status != "resolved").all()
+
+
 def _utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -79,6 +94,9 @@ def _conversation_out(conversation: models.Conversation) -> dict:
         "ai_paused": conversation.ai_paused,
         "needs_seller": conversation.needs_seller,
         "unread": is_unread(conversation),
+        "overdue": bool(conversation.needs_seller and conversation.needs_seller_since
+                        and datetime.now(timezone.utc) - _utc(conversation.needs_seller_since) >= OVERDUE_AFTER),
+        "open_issue": next((f"INC-{i.id}" for i in _open_issues(conversation)), None),
         "updated_at": conversation.updated_at,
         "reply_window_open": within_service_window(conversation),
     }
@@ -140,6 +158,9 @@ async def seller_reply(conversation_id: int, payload: SellerReply, db: Session =
     except WhatsAppSendError as e:
         raise HTTPException(status_code=502, detail=str(e))
     # The question is answered; small talk for the next 30 min still goes to the seller (chatbot.py).
+    for incident in db.query(models.Incident).filter(models.Incident.conversation_id == conversation.id,
+                                                     models.Incident.status == "open").all():
+        incident.status = "in_progress"  # replying to an issue starts work on it
     conversation.needs_seller = False
     conversation.seller_alert_stage = 0
     conversation.last_seller_reply_at = datetime.now(timezone.utc)

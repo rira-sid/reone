@@ -15,7 +15,7 @@ from routers.invoices import PUBLIC_BASE_URL
 
 router = APIRouter(prefix="/products", tags=["products"])
 
-MAX_IMAGES = 4
+MAX_IMAGES = 8  # room for one photo per colour
 MAX_IMAGE_BYTES = 1_500_000  # the dashboard shrinks photos to ~150 KB; this only stops abuse
 IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
@@ -34,7 +34,9 @@ def product_out(product: models.Product) -> dict:
         "category": product.category,
         "description": product.description,
         "nutrition": product.nutrition,
-        "variants": [{"id": v.id, "label": v.label, "price": v.price, "stock": v.stock} for v in product.active_variants],
+        "option_names": product.options or None,
+        "variants": [{"id": v.id, "label": v.label, "option1": v.option1, "option2": v.option2, "image_id": v.image_id,
+                      "price": v.price, "stock": v.stock} for v in product.active_variants],
         "images": [{"id": i.id, "url": image_url(i)} for i in product.images],
     }
 
@@ -48,21 +50,46 @@ def _get_product(db: Session, business: models.Business, product_id: int) -> mod
     return product
 
 
+def _set_option_names(product: models.Product, names: list[str] | None):
+    clean = [n.strip()[:30] for n in (names or []) if n and n.strip()]
+    if len(clean) > 2:
+        raise HTTPException(status_code=400, detail="A product can vary by at most two things, e.g. Size and Colour")
+    if len({n.lower() for n in clean}) != len(clean):
+        raise HTTPException(status_code=400, detail="The two options need different names")
+    product.option_names = json.dumps(clean, ensure_ascii=False) if clean else None
+
+
+def _label(product: models.Product, v: schemas.VariantIn) -> tuple[str, str | None, str | None]:
+    """(label, option1, option2). With options, the label is built from them: "M / Red"."""
+    names = product.options
+    if not names:
+        return v.label.strip(), None, None
+    first = (v.option1 or "").strip()[:40]
+    second = (v.option2 or "").strip()[:40] if len(names) > 1 else None
+    if not first or (len(names) > 1 and not second):
+        raise HTTPException(status_code=400, detail=f"Every choice needs a {' and a '.join(names)}")
+    return (f"{first} / {second}" if second else first), first, second
+
+
 def _apply_variants(db: Session, product: models.Product, variants: list[schemas.VariantIn]):
-    """Replace the product's sizes. Sizes that appear on past orders are hidden, not deleted."""
-    clean = [v for v in variants if v.label.strip()]
-    if len({v.label.strip().lower() for v in clean}) != len(clean):
-        raise HTTPException(status_code=400, detail="Each size needs a different name")
+    """Replace the product's sizes / option combinations. Ones that appear on past orders are hidden,
+    not deleted."""
+    labelled = [(v, *_label(product, v)) for v in variants if (v.label or v.option1 or "").strip()]
+    if len({label.lower() for _, label, _, _ in labelled}) != len(labelled):
+        raise HTTPException(status_code=400, detail="Each size or combination must be different")
+    image_ids = {i.id for i in product.images}
     existing = {v.id: v for v in product.variants}
     keep = set()
-    for position, v in enumerate(clean):
+    for position, (v, label, first, second) in enumerate(labelled):
         if v.price < 0 or v.stock < 0:
             raise HTTPException(status_code=400, detail="Price and stock can't be negative")
         row = existing.get(v.id) if v.id else None
         if row is None:
             row = models.ProductVariant(product=product)
             db.add(row)
-        row.label, row.price, row.stock, row.position, row.is_active = v.label.strip(), v.price, v.stock, position, True
+        row.label, row.price, row.stock, row.position, row.is_active = label, v.price, v.stock, position, True
+        row.option1, row.option2 = first, second
+        row.image_id = v.image_id if v.image_id in image_ids else None
         if row.id:
             keep.add(row.id)
     for vid, row in existing.items():
@@ -119,8 +146,9 @@ async def _translate_soon(product_id: int):
 @router.post("", response_model=schemas.ProductOut)
 def create_product(payload: schemas.ProductCreate, background: BackgroundTasks, db: Session = Depends(get_db),
                    business: models.Business = Depends(current_business)):
-    data = payload.model_dump(exclude={"variants"})
+    data = payload.model_dump(exclude={"variants", "option_names"})
     product = models.Product(business_id=business.id, **data)
+    _set_option_names(product, payload.option_names)
     db.add(product)
     db.flush()
     if payload.variants:
@@ -137,6 +165,8 @@ def update_product(product_id: int, payload: schemas.ProductUpdate, background: 
     product = _get_product(db, business, product_id)
     fields = payload.model_dump(exclude_unset=True)
     variants = fields.pop("variants", None)
+    if "option_names" in fields:
+        _set_option_names(product, fields.pop("option_names"))
     for field, value in fields.items():
         setattr(product, field, value)
     if variants is not None:
@@ -181,6 +211,9 @@ def delete_image(product_id: int, image_id: int, db: Session = Depends(get_db),
     if not image:
         raise HTTPException(status_code=404, detail="Photo not found")
     product.images.remove(image)
+    for variant in product.variants:
+        if variant.image_id == image_id:
+            variant.image_id = None
     db.commit()
     db.refresh(product)
     return product_out(product)
