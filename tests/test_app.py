@@ -1104,8 +1104,10 @@ def test_founder_console_onboards_and_tracks_businesses(client):
 
     # Shop funnel is tracked per business.
     product = add_product(client, {"Authorization": f"Bearer {login.json()['token']}"}, "Cupcake", price=50)
-    client.get(f"/shop/{bid}")
-    client.get(f"/shop/{bid}")
+    shopper = {"X-Forwarded-For": "10.3.3.3"}  # not the address the seller signed in from
+    for visitor in ("a", "b"):
+        client.get(f"/shop/{bid}", headers=shopper)
+        client.post(f"/shop/{bid}/visit", json={"visitor": visitor}, headers=shopper)
     client.post(f"/shop/{bid}/event", content="add_to_cart")
     client.post(f"/shop/{bid}/event", content="checkout_open")
     client.post(f"/shop/{bid}/event", content="nonsense")

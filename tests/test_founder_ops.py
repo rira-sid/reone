@@ -98,16 +98,44 @@ def test_logins_are_recorded(client):
 def test_visits_are_counted(client):
     founder = founder_headers(client)
     bid, _ = new_seller(client)
-    client.get(f"/shop/{bid}", headers={"User-Agent": "Mozilla/5.0 (Linux; Android 14) Chrome/120 Mobile WhatsApp"})
-    client.get(f"/shop/{bid}?src=Instagram")
-    assert client.post("/track/visit", json={"page": "signup", "referrer": "https://www.google.com/"}).status_code == 204
+    phone = {"User-Agent": "Mozilla/5.0 (Linux; Android 14) Chrome/120 Mobile WhatsApp", "X-Forwarded-For": "10.1.1.1"}
+    # Opening the page alone counts nothing - the page's own beacon does (robots never send it).
+    page = client.get(f"/shop/{bid}?src=Instagram", headers=phone).text
+    assert '"source": "Instagram"' in page
     data = client.get(f"/admin/visitors?business_id={bid}", headers=founder).json()
-    assert data["total"] == 2
-    assert {s["label"] for s in data["sources"]} == {"WhatsApp", "Instagram"}
+    assert data["total"] == 0
+    for visitor, source in [("a", "WhatsApp"), ("a", "WhatsApp"), ("b", "Instagram")]:
+        assert client.post(f"/shop/{bid}/visit", json={"visitor": visitor, "source": source},
+                           headers=phone).status_code == 204
+    assert client.post("/track/visit", json={"page": "signup", "referrer": "https://www.google.com/", "visitor": "c"},
+                       headers={**phone, "User-Agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/120"}).status_code == 204
+    data = client.get(f"/admin/visitors?business_id={bid}", headers=founder).json()
+    assert (data["total"], data["people"]) == (3, 2)  # visitor "a" came twice
+    assert {s["label"]: s["count"] for s in data["sources"]} == {"WhatsApp": 1, "Instagram": 1}
     everything = client.get("/admin/visitors", headers=founder).json()
     assert any(p["label"] == "Seller sign-up page" for p in everything["pages"])
     assert any(s["label"] == "Google" for s in everything["sources"])
-    assert len(everything["daily"]) == 30
+    assert len(everything["daily"]) == 30 and everything["daily"][-1]["people"] >= 3
+
+
+def test_own_visits_and_robots_are_not_counted(client):
+    founder = founder_headers(client)
+    bid, h = new_seller(client, alert_phone="9000000077")
+    phone = {"User-Agent": "Mozilla/5.0 (iPhone) Safari/604.1", "X-Forwarded-For": "10.2.2.2"}
+    # A browser that signed in to a dashboard, or a shop link opened from the dashboard (?staff=1).
+    client.post(f"/shop/{bid}/visit", json={"visitor": "me", "staff": True}, headers=phone)
+    client.post("/track/visit", json={"page": "login", "visitor": "me", "staff": True}, headers=phone)
+    # Link previews and crawlers.
+    for agent in ("WhatsApp/2.24.1 A", "facebookexternalhit/1.1", "Googlebot/2.1"):
+        client.post(f"/shop/{bid}/visit", json={"visitor": "bot"}, headers={**phone, "User-Agent": agent})
+    # Same internet address a seller signed in from this week (TestClient signs in as "testclient").
+    client.post(f"/shop/{bid}/visit", json={"visitor": "x"}, headers={"User-Agent": phone["User-Agent"]})
+    assert client.get(f"/admin/visitors?business_id={bid}", headers=founder).json()["total"] == 0
+    # The shop's own alert number opening its personal shop link is marked as the shop's own.
+    from chatbot import sign_value
+    token = "919000000077." + sign_value(f"cust:{bid}:919000000077")
+    assert '"staff": true' in client.get(f"/shop/{bid}?c={token}", headers=phone).text
+    assert '"staff": false' in client.get(f"/shop/{bid}", headers=phone).text
 
 
 def test_plan_payment_through_razorpay_extends_and_unpauses(client, fake_whatsapp):

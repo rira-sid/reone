@@ -102,6 +102,13 @@ def _top(counter: Counter, n: int = 12) -> list[dict]:
     return [{"label": label or "Unknown", "count": count} for label, count in counter.most_common(n)]
 
 
+def _people(rows, label) -> Counter:
+    """How many different people per label (one browser id = one person; older visits without
+    an id count one each)."""
+    seen = {(label(r), r.visitor_id or f"visit-{r.id}") for r in rows}
+    return Counter(key for key, _ in seen)
+
+
 @router.get("/visitors")
 def visitors(days: int = 30, page: str | None = None, business_id: int | None = None, db: Session = Depends(get_db)):
     q = db.query(models.Visit).filter(models.Visit.created_at >= _since(days))
@@ -112,22 +119,26 @@ def visitors(days: int = 30, page: str | None = None, business_id: int | None = 
     rows = q.all()
     names = _names(db)
     flags = {r.country: r.country_code for r in rows if r.country}
-    by_day = Counter(_utc(r.created_at).date().isoformat() for r in rows if r.created_at)
+    day = lambda r: _utc(r.created_at).date().isoformat() if r.created_at else None  # noqa: E731
+    by_day = Counter(day(r) for r in rows)
+    people_by_day = _people(rows, day)
     today = datetime.now(timezone.utc).date()
     span = max(1, min(days, 90))
+    # Breakdowns count people, not page loads, so one busy visitor can't tilt them.
     return {
         "total": len(rows),
-        "countries": [{**c, "code": flags.get(c["label"])} for c in _top(Counter(r.country for r in rows), 30)],
-        "cities": _top(Counter(", ".join(p for p in (r.city, r.country) if p) or None for r in rows), 15),
-        "devices": _top(Counter((r.device or "Unknown").split(" · ")[0] for r in rows)),
-        "systems": _top(Counter(" · ".join((r.device or "Unknown").split(" · ")[1:2]) or "Unknown" for r in rows)),
-        "sources": _top(Counter(r.source for r in rows)),
-        "pages": _top(Counter(
-            {"shop": "Shop pages", "signup": "Seller sign-up page", "login": "Seller login page"}.get(r.page, r.page)
-            for r in rows)),
-        "shops": _top(Counter(names.get(r.business_id, f"#{r.business_id}") for r in rows if r.business_id)),
-        "daily": [{"date": (today - timedelta(days=i)).isoformat(),
-                   "count": by_day.get((today - timedelta(days=i)).isoformat(), 0)} for i in range(span - 1, -1, -1)],
+        "people": len({r.visitor_id or f"visit-{r.id}" for r in rows}),
+        "countries": [{**c, "code": flags.get(c["label"])} for c in _top(_people(rows, lambda r: r.country), 30)],
+        "cities": _top(_people(rows, lambda r: ", ".join(p for p in (r.city, r.country) if p) or None), 15),
+        "devices": _top(_people(rows, lambda r: (r.device or "Unknown").split(" · ")[0])),
+        "systems": _top(_people(rows, lambda r: " · ".join((r.device or "Unknown").split(" · ")[1:2]) or "Unknown")),
+        "sources": _top(_people(rows, lambda r: r.source)),
+        "pages": _top(_people(rows, lambda r: {"shop": "Shop pages", "signup": "Seller sign-up page",
+                                               "login": "Seller login page"}.get(r.page, r.page))),
+        "shops": _top(_people([r for r in rows if r.business_id],
+                              lambda r: names.get(r.business_id, f"#{r.business_id}"))),
+        "daily": [{"date": d, "count": by_day.get(d, 0), "people": people_by_day.get(d, 0)}
+                  for d in ((today - timedelta(days=i)).isoformat() for i in range(span - 1, -1, -1))],
     }
 
 

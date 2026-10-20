@@ -73,6 +73,34 @@ async def shop_event(business_id: int, request: Request, db: Session = Depends(g
     return Response(status_code=204)
 
 
+class ShopVisitIn(BaseModel):
+    visitor: str | None = None
+    source: str | None = None
+    staff: bool = False
+
+
+@router.post("/{business_id}/visit")
+def shop_visit(business_id: int, payload: ShopVisitIn, request: Request, background: BackgroundTasks,
+               db: Session = Depends(get_db)):
+    """Sent by the shop page once it has opened in a browser - link previews and crawlers that only
+    fetch the HTML never send it, so a visit means a person actually saw the shop."""
+    from tracking import record_visit, request_info
+
+    if db.get(models.Business, business_id):
+        background.add_task(record_visit, request_info(request), "shop", business_id,
+                            (payload.source or "Direct / WhatsApp")[:60], (payload.visitor or "")[:64] or None,
+                            payload.staff)
+    return Response(status_code=204)
+
+
+def _own_number(db: Session, business: models.Business, phone: str | None) -> bool:
+    """The shop's own numbers (or the founder's) testing their shop link - not a customer."""
+    from tracking import founder_phone
+
+    tail = lambda p: re.sub(r"\D", "", p or "")[-10:]  # noqa: E731
+    return bool(phone) and tail(phone) in {tail(p) for p in (business.phone, business.alert_phone, founder_phone(db)) if p}
+
+
 def _hex_to_rgb(color: str) -> tuple[int, int, int]:
     return int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
 
@@ -157,11 +185,10 @@ def catalog(shop_key: str, request: Request, background: BackgroundTasks, c: str
         return HTMLResponse("<!doctype html><meta name=viewport content='width=device-width'><title>Unavailable</title>"
                             "<p style='font:18px system-ui;text-align:center;margin-top:30vh'>This shop is "
                             "temporarily unavailable.</p>", status_code=503)
-    _record(db, business.id, "view")
-    from tracking import record_visit, request_info, traffic_source
+    from tracking import traffic_source
 
-    background.add_task(record_visit, request_info(request), "shop", business.id,
-                        traffic_source(request.headers.get("referer"), src, request.headers.get("user-agent")))
+    # The visit itself is counted by the page's own beacon (POST /shop/{id}/visit) once it opens.
+    source = traffic_source(request.headers.get("referer"), src, request.headers.get("user-agent"))
     products = (
         db.query(models.Product)
         .filter(models.Product.business_id == business.id, models.Product.is_active.is_(True))
@@ -203,6 +230,7 @@ def catalog(shop_key: str, request: Request, background: BackgroundTasks, c: str
         "prefill": prefill,
         "languages": [[k, LANGUAGES[k][0]] for k in available_languages()],
         "whatsapp": _wa_link(business.phone),
+        "visit": {"source": source, "staff": _own_number(db, business, phone)},
     }
     payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
     return HTMLResponse(SHOP_HTML
@@ -634,6 +662,30 @@ function track(kind) {
   sent[kind] = true;
   try { navigator.sendBeacon(`/shop/${D.shop.id}/event`, kind); } catch (e) {}
 }
+
+// Count this visit: a random id kept by this browser makes one person one visitor. Links from the
+// seller dashboard carry ?staff=1, which marks this browser as the shop's own from then on.
+(function countVisit() {
+  let visitor = null, staff = D.visit.staff;
+  try {
+    const url = new URL(location.href);
+    if (url.searchParams.get("staff") === "1") {
+      localStorage.setItem("rira-staff", "1");
+      url.searchParams.delete("staff");
+      history.replaceState(null, "", url);
+    }
+    staff = staff || localStorage.getItem("rira-staff") === "1";
+    visitor = localStorage.getItem("rira-visitor");
+    if (!visitor) {
+      visitor = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now());
+      localStorage.setItem("rira-visitor", visitor);
+    }
+  } catch (e) {}
+  fetch(`/shop/${D.shop.id}/visit`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, keepalive: true,
+    body: JSON.stringify({ visitor, source: D.visit.source, staff }),
+  }).catch(() => {});
+})();
 
 function setQty(pid, vid, q) {
   if (q > qtyIn(pid, vid)) track("add_to_cart");

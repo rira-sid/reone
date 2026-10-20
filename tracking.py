@@ -3,6 +3,8 @@
 Country/city come from the visitor's IP via a free lookup service (ipwho.is, with ip-api.com as a
 fallback), cached in memory. Lookups run after the response is sent, so pages never wait on them.
 Visits keep only the resolved place, never the IP; sign-ins keep the IP (security trail).
+Robots aren't counted as visits: known crawler user agents, and IPs that belong to cloud servers
+(link previews, uptime checkers and deploy screenshots all run there, not people).
 Set GEO_LOOKUP=0 to switch lookups off."""
 import ipaddress
 import os
@@ -20,6 +22,11 @@ GEO_LOOKUP = os.getenv("GEO_LOOKUP", "1") != "0"
 FOUNDER_ALERT_TEMPLATE = os.getenv("WA_TEMPLATE_FOUNDER_ALERT", "founder_alert")
 FAILED_LOGIN_ALERT_AT = 5  # failed attempts on one email within 15 minutes
 _geo_cache: OrderedDict[str, tuple[str | None, str | None, str | None]] = OrderedDict()
+_cloud_ips: set[str] = set()  # IPs the lookup showed belong to a hosting provider
+ROBOT_AGENT = re.compile(r"bot|crawl|spider|slurp|preview|facebookexternalhit|^WhatsApp/|HeadlessChrome|"
+                         r"python|curl|wget|httpx|go-http|java/|node-fetch|axios|vercel", re.I)
+CLOUD_ORG = re.compile(r"amazon|aws|google|microsoft|azure|digitalocean|linode|akamai|ovh|hetzner|oracle|"
+                       r"alibaba|tencent|cloudflare|facebook|meta platforms|vercel|render|fastly|leaseweb|vultr", re.I)
 
 
 def client_ip(request: Request) -> str | None:
@@ -83,15 +90,21 @@ async def geo_lookup(ip: str | None) -> tuple[str | None, str | None, str | None
     result = (None, None, None)
     try:
         async with httpx.AsyncClient(timeout=4) as client:
-            r = await client.get(f"https://ipwho.is/{ip}", params={"fields": "success,country,country_code,city"})
+            r = await client.get(f"https://ipwho.is/{ip}", params={"fields": "success,country,country_code,city,connection"})
             data = r.json()
             if data.get("success"):
                 result = (data.get("country"), data.get("country_code"), data.get("city"))
+                conn = data.get("connection") or {}
+                if CLOUD_ORG.search(f"{conn.get('org', '')} {conn.get('isp', '')}"):
+                    _cloud_ips.add(ip)
             else:
-                r = await client.get(f"http://ip-api.com/json/{ip}", params={"fields": "status,country,countryCode,city"})
+                r = await client.get(f"http://ip-api.com/json/{ip}",
+                                     params={"fields": "status,country,countryCode,city,hosting"})
                 data = r.json()
                 if data.get("status") == "success":
                     result = (data.get("country"), data.get("countryCode"), data.get("city"))
+                    if data.get("hosting"):
+                        _cloud_ips.add(ip)
     except (httpx.HTTPError, ValueError) as e:
         print("GEO LOOKUP FAILED:", repr(e))
         return result  # don't cache failures
@@ -103,16 +116,38 @@ async def geo_lookup(ip: str | None) -> tuple[str | None, str | None, str | None
 
 def request_info(request: Request) -> dict:
     """What to note about a request now, while it's available (the background task can't read it)."""
-    return {"ip": client_ip(request), "device": device_label(request.headers.get("user-agent"))}
+    agent = request.headers.get("user-agent")
+    return {"ip": client_ip(request), "device": device_label(agent), "robot": not agent or bool(ROBOT_AGENT.search(agent))}
 
 
 # ---- background recorders --------------------------------------------------------------------
 
-async def record_visit(info: dict, page: str, business_id: int | None, source: str):
+def _signed_in_lately(db, ip: str | None) -> bool:
+    """A seller or the founder signed in from this internet address in the last week - their own visit."""
+    if not ip:
+        return False
+    since = datetime.now(timezone.utc) - timedelta(days=7)
+    return db.query(models.LoginEvent.id).filter(
+        models.LoginEvent.ip == ip, models.LoginEvent.success.is_(True), models.LoginEvent.created_at >= since,
+    ).first() is not None
+
+
+async def record_visit(info: dict, page: str, business_id: int | None, source: str,
+                       visitor_id: str | None = None, staff: bool = False):
+    """Counts only real people: no robots, no cloud servers, and none of our own (sellers, founder).
+    A shop visit also feeds the shop's funnel (ShopEvent "view")."""
+    if staff or info.get("robot"):
+        return
     country, code, city = await geo_lookup(info.get("ip"))
+    if info.get("ip") in _cloud_ips:
+        return
     with SessionLocal() as db:
+        if _signed_in_lately(db, info.get("ip")):
+            return
         db.add(models.Visit(page=page, business_id=business_id, country=country, country_code=code, city=city,
-                            device=info.get("device"), source=source))
+                            device=info.get("device"), source=source, visitor_id=visitor_id))
+        if page == "shop" and business_id:
+            db.add(models.ShopEvent(business_id=business_id, kind="view"))
         db.commit()
 
 

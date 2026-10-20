@@ -62,6 +62,8 @@ class VisitIn(BaseModel):
     page: str
     referrer: str | None = None
     src: str | None = None
+    visitor: str | None = None  # the browser's own random id
+    staff: bool = False  # this browser has signed in to a dashboard - one of us, not a visitor
 
 
 @router.post("/track/visit")
@@ -71,7 +73,8 @@ def track_visit(payload: VisitIn, request: Request, background: BackgroundTasks)
 
     if payload.page in ("login", "signup"):
         background.add_task(record_visit, request_info(request), payload.page, None,
-                            traffic_source(payload.referrer, payload.src, request.headers.get("user-agent")))
+                            traffic_source(payload.referrer, payload.src, request.headers.get("user-agent")),
+                            (payload.visitor or "")[:64] or None, payload.staff)
     return Response(status_code=204)
 
 

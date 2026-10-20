@@ -386,6 +386,8 @@ class Visit(Base):
     city = Column(String, nullable=True)
     device = Column(String, nullable=True)
     source = Column(String, nullable=True)  # "WhatsApp" | "Instagram" | "Direct" | site name
+    # Random id the browser keeps for itself (no personal data) - one id = one person/device.
+    visitor_id = Column(String, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
