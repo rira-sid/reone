@@ -38,5 +38,11 @@
  "error": "Algo salió mal. Por favor, inténtalo de nuevo.",
  "no_products": "Aún no hay productos, vuelve a revisar pronto.",
  "close": "Cerrar",
- "voice_unclear": "Perdón, no pude escuchar bien tu nota de voz. ¿Puedes enviarla de nuevo o escribir tu mensaje?"
+ "voice_unclear": "Perdón, no pude escuchar bien tu nota de voz. ¿Puedes enviarla de nuevo o escribir tu mensaje?",
+ "pincode": "Codigo PIN",
+ "pincode_needed": "Por favor ingrese su codigo PIN",
+ "no_delivery_area": "Lo sentimos, todavia no hacemos entregas en esta zona.",
+ "area_check": "Necesitamos verificar la entrega a su zona. La tienda ha sido avisada y le enviara un mensaje por WhatsApp pronto.",
+ "expected_delivery": "Entrega prevista: {when}",
+ "details": "Detalles"
 }

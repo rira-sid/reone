@@ -38,5 +38,11 @@
  "error": "出错了，请再试一次。",
  "no_products": "暂无商品——请稍后再来看看。",
  "close": "关闭",
- "voice_unclear": "抱歉，没有听清您的语音消息。可以再发一次，或者打字告诉我吗？"
+ "voice_unclear": "抱歉，没有听清您的语音消息。可以再发一次，或者打字告诉我吗？",
+ "pincode": "邮政编码 (PIN)",
+ "pincode_needed": "请输入您的邮政编码 (PIN)",
+ "no_delivery_area": "抱歉，我们暂时不配送到该地区。",
+ "area_check": "我们需要确认能否配送到您的地区。已通知店家，店家会很快通过 WhatsApp 联系您。",
+ "expected_delivery": "预计送达：{when}",
+ "details": "详情"
 }

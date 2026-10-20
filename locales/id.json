@@ -38,5 +38,11 @@
  "error": "Ada yang salah. Silakan coba lagi.",
  "no_products": "Belum ada produk - silakan cek lagi nanti.",
  "close": "Tutup",
- "voice_unclear": "Maaf, pesan suara Anda kurang jelas. Bisa kirim ulang atau ketik pesan Anda?"
+ "voice_unclear": "Maaf, pesan suara Anda kurang jelas. Bisa kirim ulang atau ketik pesan Anda?",
+ "pincode": "Kode PIN",
+ "pincode_needed": "Masukkan kode PIN Anda",
+ "no_delivery_area": "Maaf, kami belum mengirim ke area ini.",
+ "area_check": "Kami perlu memeriksa pengiriman ke area Anda. Toko telah diberi tahu dan akan segera menghubungi Anda melalui WhatsApp.",
+ "expected_delivery": "Perkiraan pengiriman: {when}",
+ "details": "Detail"
 }

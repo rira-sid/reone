@@ -38,5 +38,11 @@
  "error": "Sesuatu tidak kena. Sila cuba lagi.",
  "no_products": "Belum ada produk - sila kembali nanti.",
  "close": "Tutup",
- "voice_unclear": "Maaf, nota suara anda tidak jelas. Boleh hantar semula atau taip mesej anda?"
+ "voice_unclear": "Maaf, nota suara anda tidak jelas. Boleh hantar semula atau taip mesej anda?",
+ "pincode": "Kod PIN",
+ "pincode_needed": "Sila masukkan kod PIN anda",
+ "no_delivery_area": "Maaf, kami belum buat penghantaran ke kawasan ini.",
+ "area_check": "Kami perlu semak penghantaran ke kawasan anda. Kedai telah maklum dan akan mesej anda di WhatsApp tidak lama lagi.",
+ "expected_delivery": "Jangkaan penghantaran: {when}",
+ "details": "Butiran"
 }
