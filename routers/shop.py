@@ -612,6 +612,17 @@ table.nut td{border-bottom-color:var(--line)}
 .hint.ok{background:#eaf6f7;border-color:#9cd0d4}
 .size[data-out]{opacity:.45;text-decoration:line-through}
 :focus-visible{outline-color:var(--teal-d)}
+/* Header: language picker is a solid, always-readable pill in the top-right corner (also on photo banners). */
+.top{align-items:flex-start}
+.langsel,header.banner .langsel{appearance:none;-webkit-appearance:none;background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%232a1b3d' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='m2 4 4 4 4-4'/%3E%3C/svg%3E") no-repeat right 12px center;
+ color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:0 32px 0 14px;height:40px;min-height:40px;font-size:.85rem;font-weight:600;max-width:150px;box-shadow:0 4px 14px rgba(20,12,34,.18);cursor:pointer;margin-top:6px}
+[dir=rtl] .langsel{background-position:left 12px center;padding:0 14px 0 32px}
+/* Photo banners: darker overlay, taller on wide screens, white text with a soft shadow. */
+header.banner{min-height:170px}
+header.banner h1,header.banner .tagline,header.banner .addr{text-shadow:0 1px 6px rgba(0,0,0,.55)}
+header.banner .badges span{background:rgba(20,12,34,.55);backdrop-filter:blur(4px)}
+@media(min-width:760px){header.banner{min-height:240px}}
+@media(max-width:420px){.langsel,header.banner .langsel{max-width:118px;font-size:.8rem}h1{font-size:1.15rem}.logo{width:46px;height:46px}}
 </style></head>
 <body>
 <header>
@@ -703,7 +714,7 @@ function header() {
   $("#shopTagline").textContent = D.shop.tagline;
   if (D.shop.banner) document.querySelector("header").classList.add("banner");
   if (D.shop.banner) document.querySelector("header").style.backgroundImage =
-    `linear-gradient(180deg,rgba(17,12,34,.35),rgba(17,12,34,.7)),url("${D.shop.banner.replace(/"/g, "")}")`;
+    `linear-gradient(180deg,rgba(17,12,34,.55),rgba(17,12,34,.8)),url("${D.shop.banner.replace(/"/g, "")}")`;
   if (D.shop.about) {
     const a = $("#about"); a.hidden = false;
     a.querySelector("h2").textContent = D.shop.name; a.querySelector("p").textContent = D.shop.about;
