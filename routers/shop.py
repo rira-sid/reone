@@ -622,10 +622,10 @@ header.banner{min-height:170px}
 header.banner h1,header.banner .tagline,header.banner .addr{text-shadow:0 1px 6px rgba(0,0,0,.55)}
 header.banner .badges span{background:rgba(20,12,34,.55);backdrop-filter:blur(4px)}
 @media(min-width:760px){header.banner{min-height:240px}}
-/* No banner photo: a soft purple-to-teal gradient so the top of the shop isn't empty. */
-header:not(.banner){background:linear-gradient(135deg,#6e2c7a 0%,#8a4791 45%,#5fa9af 100%);color:#fff}
+/* No banner photo: a vibrant purple → magenta → orange gradient so the top of the shop isn't empty. */
+header:not(.banner){background:linear-gradient(120deg,#6e2c7a 0%,#c2185b 50%,#ff7a47 100%);color:#fff}
 header:not(.banner):after{background:radial-gradient(circle,rgba(255,255,255,.22) 0%,rgba(255,255,255,0) 70%)}
-header:not(.banner):before{background:radial-gradient(circle,rgba(255,122,71,.35) 0%,rgba(255,122,71,0) 70%)}
+header:not(.banner):before{background:radial-gradient(circle,rgba(255,196,0,.35) 0%,rgba(255,196,0,0) 70%)}
 header:not(.banner) .addr,header:not(.banner) .tagline{opacity:.9}
 header:not(.banner) .badges span{background:rgba(255,255,255,.18);color:#fff;border-color:rgba(255,255,255,.3)}
 @media(max-width:420px){.langsel,header.banner .langsel{max-width:118px;font-size:.8rem}h1{font-size:1.15rem}.logo{width:46px;height:46px}}
