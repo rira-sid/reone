@@ -151,6 +151,15 @@ def get_business(business: models.Business = Depends(current_business)):
     return _out(business)
 
 
+@router.get("/share-kit")
+def share_kit(business: models.Business = Depends(current_business)):
+    """The shop link and its QR code (SVG) for the dashboard's shareable posters."""
+    from routers.pay import _qr_svg
+
+    url = f"{PUBLIC_BASE_URL}{shop_path(business)}"
+    return {"catalog_url": url, "qr_svg": _qr_svg(url)}
+
+
 @router.patch("", response_model=BusinessOut)
 def update_business(
     payload: BusinessUpdate, business: models.Business = Depends(owner_business), db: Session = Depends(get_db)

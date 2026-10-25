@@ -21,3 +21,12 @@ def test_webhook_signature_checked_when_secret_set(client, monkeypatch):
 def test_webhook_open_without_secret(client, monkeypatch):
     monkeypatch.setattr(main, "WHATSAPP_APP_SECRETS", [])
     assert client.post("/webhook", json={"entry": []}).status_code == 200
+
+
+def test_share_kit_has_link_and_qr(client):
+    from tests.test_app import owner_headers
+
+    assert client.get("/business/share-kit").status_code == 401
+    data = client.get("/business/share-kit", headers=owner_headers(client)).json()
+    assert data["catalog_url"].startswith("http") and "/shop/" in data["catalog_url"]
+    assert data["qr_svg"].lstrip().startswith("<")
