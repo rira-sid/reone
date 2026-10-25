@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import itertools
 import json
+from urllib.parse import urlsplit
 from datetime import datetime, timedelta, timezone
 
 import ai
@@ -24,6 +25,12 @@ def new_seller(client, name="Test Shop", **settings):
     if settings:
         assert client.patch("/business", json=settings, headers=headers).status_code == 200
     return r.json()["business_id"], headers
+
+
+def local_path(url):
+    """Path + query of a full link, so the test client can open it (the host is the public URL)."""
+    parts = urlsplit(url)
+    return parts.path + (f"?{parts.query}" if parts.query else "")
 
 
 def owner_headers(client):
@@ -822,7 +829,7 @@ def test_upi_checkout_sends_pay_button_and_page(client, fake_ai, fake_whatsapp):
     assert button["action"]["parameters"]["display_text"] == "Pay ₹180"
     assert button["header"]["image"]["link"].endswith("/static/pay/upi-banner.png")
 
-    pay_path = button["action"]["parameters"]["url"].split(".com", 1)[1]
+    pay_path = local_path(button["action"]["parameters"]["url"])
     page = client.get(pay_path)
     assert page.status_code == 200
     assert "tez://upi/pay?pa=masala%40okaxis&amp;pn=Siddharth%20Masala&amp;am=180.00" in page.text
@@ -951,7 +958,7 @@ def test_razorpay_upi_buttons_amount_locked_and_signature_verified(client, fake_
     assert button["type"] == "cta_url" and button["action"]["parameters"]["display_text"] == "Pay ₹459"
     assert button["footer"]["text"] == "Secure payment by Razorpay"
 
-    pay_path = button["action"]["parameters"]["url"].split(".com", 1)[1]
+    pay_path = local_path(button["action"]["parameters"]["url"])
     page = client.get(pay_path).text
     assert rzp.created == [{"amount": 45900, "currency": "INR", "receipt": f"order-{order_id}",
                             "notes": {"order_id": str(order_id), "business_id": str(rzp_bid(client, h))}}]
@@ -981,7 +988,7 @@ def test_razorpay_order_paid_webhook_confirms(client, fake_ai, fake_whatsapp, mo
     business_id, h, rzp = razorpay_seller(client, monkeypatch, "PN_RZPHOOK")
     product = add_product(client, h, "Pepper", price=90, stock=5)
     order_id = place_whatsapp_order(client, fake_ai, "PN_RZPHOOK", "919000000042", product["id"], qty=1)
-    pay_path = fake_whatsapp.payloads[-1]["interactive"]["action"]["parameters"]["url"].split(".com", 1)[1]
+    pay_path = local_path(fake_whatsapp.payloads[-1]["interactive"]["action"]["parameters"]["url"])
     client.get(pay_path)  # customer opens the page -> Razorpay order created
 
     body = json.dumps({"event": "order.paid", "payload": {
@@ -1015,7 +1022,7 @@ def test_more_options_opens_razorpay_link_not_the_pay_page(client, fake_ai, fake
     with SessionLocal() as db:
         pay_page = db.get(models.Order, order_id).payment_link_url
 
-    page = client.get(pay_page.split("onrender.com", 1)[-1] if "onrender.com" in pay_page else pay_page).text
+    page = client.get(local_path(pay_page)).text
     assert "href='https://rzp.io/l/real-link'" in page
     with SessionLocal() as db:
         assert db.get(models.Order, order_id).payment_link_url == pay_page  # customer's link unchanged
