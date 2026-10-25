@@ -1,4 +1,7 @@
 import asyncio
+import hashlib
+import hmac
+import json
 import os
 from collections import deque
 from contextlib import asynccontextmanager
@@ -25,6 +28,23 @@ from routers import account, delivery_zones, founder_ops, issues, knowledge, set
 from routers.pay import handle_payment_status
 
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
+# Meta signs every webhook with the app secret (X-Hub-Signature-256). Comma-separated when sellers use
+# different Meta apps. Unset = no check (logged once at startup).
+WHATSAPP_APP_SECRETS = [s.strip() for s in os.getenv("WHATSAPP_APP_SECRET", "").split(",") if s.strip()]
+if not WHATSAPP_APP_SECRETS:
+    print("WARNING: WHATSAPP_APP_SECRET is not set - WhatsApp webhook signatures are not checked.")
+
+
+def signed_by_meta(raw: bytes, header: str | None) -> bool:
+    if not WHATSAPP_APP_SECRETS:
+        return True
+    if not header or not header.startswith("sha256="):
+        return False
+    given = header.removeprefix("sha256=")
+    return any(
+        hmac.compare_digest(hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest(), given)
+        for secret in WHATSAPP_APP_SECRETS
+    )
 
 Base.metadata.create_all(bind=engine)
 add_missing_columns(engine)
@@ -128,7 +148,11 @@ _PLACEHOLDERS = {
 
 @app.post("/webhook")
 async def receive_message(request: Request, background_tasks: BackgroundTasks):
-    body = await request.json()
+    raw = await request.body()
+    if not signed_by_meta(raw, request.headers.get("X-Hub-Signature-256")):
+        print("WEBHOOK REJECTED: bad or missing X-Hub-Signature-256")
+        return Response(status_code=403)
+    body = json.loads(raw or b"{}")
     print("INCOMING:", body)
 
     # One delivery can batch several messages, possibly for different sellers' numbers.

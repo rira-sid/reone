@@ -29,6 +29,7 @@ FastAPI service behind the WhatsApp ordering bot and the seller dashboard.
 | `CLAUDE_MODEL` | No | Defaults to `claude-opus-5-5`; `claude-haiku-5-5` is far cheaper. |
 | `SECRET_KEY` | Yes | Long random string. Encrypts sellers' WhatsApp/Razorpay secrets and signs logins and invoice links. **Never change it** once sellers have connected accounts - their saved keys become unreadable. |
 | `WHATSAPP_VERIFY_TOKEN` | Yes | The verify token entered in Meta's webhook settings. |
+| `WHATSAPP_APP_SECRET` | Recommended | Meta app secret (App settings → Basic). Webhook calls without a valid `X-Hub-Signature-256` are rejected. Comma-separate several if sellers use different Meta apps. Unset = not checked. |
 | `DASHBOARD_PASSWORD` | Recommended | Password for the original business (id 1). Until set, business 1's dashboard API is open to anyone. |
 | `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_TOKEN` | For business 1 | The original business's WhatsApp number, used when its Settings page is empty. |
 | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | For business 1 | Same fallback for Razorpay. Other sellers enter their own keys in Settings. |
