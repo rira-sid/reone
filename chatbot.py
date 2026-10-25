@@ -32,6 +32,8 @@ from whatsapp import WhatsAppSendError, download_media, send_interactive, send_m
 ACK_EVERY = timedelta(minutes=10)
 # While the seller is answering a customer, don't keep telling the customer "the seller will reply".
 SELLER_CHAT_ACTIVE = timedelta(minutes=30)
+# What the bot still answers while a customer's question waits for the owner.
+BOT_ANSWERS_WHILE_OWNER_ASKED = ("greeting", "order_status", "shop", "info")
 MORE_LANGUAGES_ID = "lang:more"
 # Wait for the customer to stop typing before answering; longer when the last message looks unfinished.
 BATCH_WAIT = float(os.getenv("BATCH_WAIT_SECONDS", "10"))
@@ -202,6 +204,12 @@ async def route_to_seller(db, business: models.Business, creds, conversation: mo
         conversation.seller_alert_stage = 1
     db.commit()
     await alert_seller(db, business, conversation, question)
+    await _hold_customer(db, creds, conversation, hold)
+
+
+async def _hold_customer(db, creds, conversation: models.Conversation, hold: str | None = None):
+    """One natural "let me check" line - not again for every follow-up within ACK_EVERY."""
+    now = datetime.now(timezone.utc)
     acked = _utc(conversation.seller_ack_at)
     if not acked or now - acked > ACK_EVERY:
         conversation.seller_ack_at = now
@@ -443,10 +451,13 @@ async def respond(conversation_id: int):
         lang = conversation.preferred_language
         reply = (turn.reply or "").strip()
 
-        # A question is already with the owner: keep everything in that one thread (no second alert,
-        # no bot reply) - except a plain greeting, which gets a reassuring hello.
-        if conversation.needs_seller and turn.intent not in ("greeting", "order_status"):
-            await alert_seller(db, business, conversation, combined, added=True)
+        # A question is already with the owner: further questions join that one thread (no second
+        # alert, no bot reply). Shopping, shop facts, order status and greetings are still answered -
+        # a waiting question must never block an order. If the owner can't be reached, the customer
+        # still hears back.
+        if conversation.needs_seller and turn.intent not in BOT_ANSWERS_WHILE_OWNER_ASKED:
+            if not await alert_seller(db, business, conversation, combined, added=True):
+                await _hold_customer(db, creds, conversation, reply or None)
             return
 
         if turn.intent == "issue":

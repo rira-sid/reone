@@ -330,6 +330,40 @@ def test_question_goes_to_seller_who_replies_from_whatsapp(client, fake_ai, fake
     assert [s for s in fake_whatsapp.sent[sent:] if s[1] == SELLER]
 
 
+def test_waiting_question_never_blocks_shopping(client, fake_ai, fake_whatsapp):
+    new_seller(client, wa_phone_number_id="PN_WAITSHOP", wa_token="t", alert_phone="98000 00001")
+    start_chat(client, "PN_WAITSHOP", "919000000111")
+    fake_ai.queue = [fake_ai.turn(intent="question", reply="Let me check that for you 😊")]
+    whatsapp_message(client, "PN_WAITSHOP", "919000000111", text("do you do bulk orders?"))
+    # While that question waits for the owner, the customer still gets the shop link.
+    fake_ai.queue = [fake_ai.turn(intent="shop", reply="Take a look and order below 🛍️", share_link=True)]
+    whatsapp_message(client, "PN_WAITSHOP", "919000000111", text("I want to order"))
+    last = fake_whatsapp.sent[-1]
+    assert last[1] == "919000000111" and last[2] == "interactive"
+
+
+def test_customer_hears_back_when_owner_alert_fails(client, fake_ai, fake_whatsapp, monkeypatch):
+    import chatbot
+    from datetime import timedelta as td
+
+    new_seller(client, wa_phone_number_id="PN_ALERTFAIL", wa_token="t", alert_phone="98000 00001")
+    start_chat(client, "PN_ALERTFAIL", "919000000112")
+    fake_ai.queue = [fake_ai.turn(intent="question", reply="Let me check that for you 😊")]
+    whatsapp_message(client, "PN_ALERTFAIL", "919000000112", text("do you do bulk orders?"))
+    with SessionLocal() as db:  # the first holding line was long ago
+        convo = db.query(models.Conversation).filter_by(phone="919000000112").first()
+        convo.seller_ack_at = datetime.now(timezone.utc) - td(hours=1)
+        db.commit()
+
+    async def alert_fails(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(chatbot, "alert_seller", alert_fails)
+    fake_ai.queue = [fake_ai.turn(intent="question", reply="Still checking, one moment 🙏")]
+    whatsapp_message(client, "PN_ALERTFAIL", "919000000112", text("for 10 kg?"))
+    assert fake_whatsapp.sent[-1][1] == "919000000112" and fake_whatsapp.sent[-1][3] == "Still checking, one moment 🙏"
+
+
 def test_seller_message_without_swipe_is_treated_as_customer(client, fake_ai, fake_whatsapp):
     new_seller(client, wa_phone_number_id="PN_SELFTEST", wa_token="t", alert_phone=SELLER)
     fake_ai.queue = [fake_ai.turn(intent="greeting", reply="Hi! How can I help you today?")]
