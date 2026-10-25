@@ -14,7 +14,7 @@ import models
 from auth import sign_value
 from database import get_db
 
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://reone-backend.onrender.com").rstrip("/")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://reone-backend-production.up.railway.app").rstrip("/")
 IST = timezone(timedelta(hours=5, minutes=30))
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])

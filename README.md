@@ -19,7 +19,7 @@ FastAPI service behind the WhatsApp ordering bot and the seller dashboard.
 
 | Variable | Required | What it does |
 |---|---|---|
-| `DATABASE_URL` | Yes in production | Postgres URL. Without it a local SQLite file is used - on Render that file is wiped on every deploy. |
+| `DATABASE_URL` | Yes in production | Postgres URL. Without it a local SQLite file is used - on Railway that file is wiped on every deploy. |
 | `AI_PROVIDER` | No | `gemini` (default, free tier) or `anthropic` (Claude, paid). |
 | `GEMINI_API_KEY` | If gemini | Free key from aistudio.google.com. Without the active provider's key every chat is handed to the seller. |
 | `GEMINI_MODEL` | No | Defaults to `gemini-flash-lite-latest` (free tier). With Gemini billing on, set `gemini-flash-latest`. |
@@ -40,7 +40,7 @@ FastAPI service behind the WhatsApp ordering bot and the seller dashboard.
 | `SELLER_DASHBOARD_URL` | Optional | Linked in billing messages, default `https://reone-dashboard.vercel.app`. |
 | `FOUNDER_ALERT_PHONE` | Optional | Founder's WhatsApp for alerts, if not set in the founder console. |
 | `GEO_LOOKUP` | Optional | `0` turns off IP → country/city lookups (ipwho.is, ip-api.com) for sign-ins and visits. |
-| `PUBLIC_BASE_URL` | Optional | Public URL of this backend, used in invoice links. Default `https://reone-backend.onrender.com`. |
+| `PUBLIC_BASE_URL` | Optional | Public URL of this backend, used in invoice links. Default `https://reone-backend-production.up.railway.app`. |
 | `WA_TEMPLATE_ORDER_UPDATE`, `WA_TEMPLATE_ORDER_UPDATE_LANG` | Optional | Approved template for order updates sent more than 24h after the customer's last message. Default `order_update` / `en` - see `WHATSAPP_TEMPLATES.md`. |
 
 Generate a `SECRET_KEY` with:
