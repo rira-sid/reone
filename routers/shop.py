@@ -629,6 +629,14 @@ header:not(.banner):before{background:radial-gradient(circle,rgba(255,196,0,.35)
 header:not(.banner) .addr,header:not(.banner) .tagline{opacity:.9}
 header:not(.banner) .badges span{background:rgba(255,255,255,.18);color:#fff;border-color:rgba(255,255,255,.3)}
 @media(max-width:420px){.langsel,header.banner .langsel{max-width:118px;font-size:.8rem}h1{font-size:1.15rem}.logo{width:46px;height:46px}}
+/* Brand (same as the intro website and dashboard, see BRAND.md): orange pill actions, purple selection,
+   gradient shop initial; teal only for "done / OK" hints. */
+:root{--magenta:#c2185b;--grad:linear-gradient(120deg,#6e2c7a 0%,#c2185b 55%,#ff7a47 100%)}
+.logo{background:var(--grad);box-shadow:0 6px 16px rgba(194,24,91,.35)}
+.chip[aria-pressed=true]{background:var(--violet);border-color:var(--violet)}
+.add{background:var(--orange);color:#fff;border:0;border-radius:999px;box-shadow:0 6px 14px rgba(255,122,71,.35)}
+.big{background:var(--orange);border-radius:999px;box-shadow:0 8px 20px rgba(255,122,71,.3)}
+.big:disabled{background:#d9d2dc;box-shadow:none}
 </style></head>
 <body>
 <header>
@@ -649,8 +657,8 @@ header:not(.banner) .badges span{background:rgba(255,255,255,.18);color:#fff;bor
 <script>
 const D = JSON.parse(document.getElementById("data").textContent);
 const T = D.texts, R = D.rules;
-// Studio palette: purple, teal, orange and their softer shades (same family as the dashboard).
-const COLORS = ["#6e2c7a","#5fa9af","#ff7a47","#8d5a99","#e0663a","#7fbec4"];
+// Brand palette: purple, magenta, orange and their softer shades (same family as the dashboard).
+const COLORS = ["#6e2c7a","#c2185b","#ff7a47","#8d5a99","#e0663a","#a8346b"];
 const KEY = "rira-cart-" + D.shop.id;
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));

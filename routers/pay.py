@@ -104,17 +104,21 @@ def _brand_head(b: models.Business | None) -> tuple[str, str, str]:
     from routers.settings import shop_image_url
     from routers.shop import _shade
 
-    color = "#6e2c7a"  # studio palette, same as the shop page and dashboard
+    color = "#6e2c7a"  # brand palette, same as the intro website, shop page and dashboard (BRAND.md)
     dark = _shade(color, 0.62)
     logo = shop_image_url(b.logo_image_id)
     mark = (f"<img src='{escape(logo)}' alt=''>" if logo else f"<span>{escape((b.name.strip() or 'S')[0].upper())}</span>")
     head = f"<header class='brand'>{mark}<b>{escape(b.name)}</b></header>"
-    css = (f".brand{{display:flex;align-items:center;gap:10px;margin:-24px -20px 20px;padding:14px 20px;color:#fff;"
-           f"background:linear-gradient(135deg,{color},{dark})}}"
-           f".brand img,.brand span{{width:36px;height:36px;border-radius:9px;object-fit:cover;background:#fff;"
-           f"display:grid;place-items:center;color:{dark};font-weight:800}}.brand b{{font-size:17px}}"
-           f"button{{background:{dark}}}.more{{color:{dark}}}.app:active{{border-color:{color};background:#fff}}"
-           f".status{{background:{_shade(color, 1.88)};color:{dark}}}")
+    css = (".brand{display:flex;align-items:center;gap:10px;margin:-24px -20px 20px;padding:16px 20px;color:#fff;"
+           "background:linear-gradient(120deg,#6e2c7a 0%,#c2185b 55%,#ff7a47 100%)}"
+           ".brand img,.brand span{width:38px;height:38px;border-radius:50%;object-fit:cover;background:#fff;"
+           f"display:grid;place-items:center;color:{color};font-weight:800}}.brand b{{font-size:17px}}"
+           "body{font-family:Poppins,system-ui,-apple-system,sans-serif;background:#f7f1ea;color:#2a1b3d}"
+           f".amount{{color:{color}}}"
+           "button{background:#ff7a47;border-radius:999px;padding:7px 14px;font-weight:600}"
+           f".more{{color:{color};font-weight:600}}.app{{border-color:#eadfd3}}.app:active{{border-color:#ff7a47;background:#fff7f2}}"
+           ".paid{color:#3a8f95}"
+           f".status{{background:#f4ecf5;color:{dark}}}")
     return head, css, color
 
 
@@ -123,6 +127,7 @@ def _page(title: str, body: str, business: models.Business | None = None) -> HTM
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{escape(title)}</title>
 <meta name="theme-color" content="{theme}">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
  body{{font-family:system-ui,-apple-system,sans-serif;background:#f3f4f6;margin:0;color:#111827}}
  .card{{max-width:440px;margin:0 auto;background:#fff;min-height:100vh;padding:24px 20px;box-sizing:border-box}}
